@@ -32,10 +32,13 @@ typedef struct {
     float offset;
     int bipolar;
     int enabled;
+    int retrigger;
     char target_component[16];
     char target_param[32];
     char source_id[32];
     int modulation_active;
+    uint8_t held_notes[128];
+    int held_count;
 } param_lfo_instance_t;
 
 static const host_api_v1_t *g_host = NULL;
@@ -138,6 +141,11 @@ static const char *bipolar_to_string(int bipolar) {
     return bipolar ? "bipolar" : "unipolar";
 }
 
+static void reset_phase(param_lfo_instance_t *inst) {
+    if (!inst) return;
+    inst->phase = 0.0f;
+}
+
 static float compute_lfo_sample(const param_lfo_instance_t *inst) {
     if (!inst) return 0.0f;
 
@@ -164,6 +172,34 @@ static void clear_modulation(param_lfo_instance_t *inst) {
     inst->modulation_active = 0;
 }
 
+static void clear_held_notes(param_lfo_instance_t *inst) {
+    if (!inst) return;
+    memset(inst->held_notes, 0, sizeof(inst->held_notes));
+    inst->held_count = 0;
+}
+
+static void handle_note_on(param_lfo_instance_t *inst, uint8_t note) {
+    if (!inst || note >= 128) return;
+    if (inst->held_notes[note]) return;
+
+    /* Retrigger only on fresh gate: no notes were previously held. */
+    if (inst->retrigger && inst->held_count == 0) {
+        reset_phase(inst);
+    }
+
+    inst->held_notes[note] = 1;
+    inst->held_count++;
+}
+
+static void handle_note_off(param_lfo_instance_t *inst, uint8_t note) {
+    if (!inst || note >= 128) return;
+    if (!inst->held_notes[note]) return;
+
+    inst->held_notes[note] = 0;
+    inst->held_count--;
+    if (inst->held_count < 0) inst->held_count = 0;
+}
+
 static int target_component_valid(const char *component) {
     if (!component || !component[0]) return 0;
     return strcmp(component, "synth") == 0 ||
@@ -187,6 +223,7 @@ static void* param_lfo_create_instance(const char *module_dir, const char *confi
     inst->offset = 0.0f;
     inst->bipolar = 1;
     inst->enabled = 0;
+    inst->retrigger = 0;
     inst->target_component[0] = '\0';
     inst->target_param[0] = '\0';
     snprintf(inst->source_id, sizeof(inst->source_id), "param_lfo_%p", (void *)inst);
@@ -206,9 +243,31 @@ static int param_lfo_process_midi(void *instance,
                                   const uint8_t *in_msg, int in_len,
                                   uint8_t out_msgs[][3], int out_lens[],
                                   int max_out) {
-    (void)instance;
+    param_lfo_instance_t *inst = (param_lfo_instance_t *)instance;
 
     if (!in_msg || in_len < 1 || max_out < 1) return 0;
+
+    if (inst) {
+        const uint8_t status = in_msg[0];
+        const uint8_t type = status & 0xF0;
+
+        /* Transport Start/Stop reset phase for deterministic sync restarts. */
+        if (status == 0xFA || status == 0xFC) {
+            reset_phase(inst);
+            if (status == 0xFC) {
+                clear_held_notes(inst);
+            }
+        }
+
+        /* Track held-note gate for retrigger behavior. */
+        if (in_len >= 3) {
+            if (type == 0x90 && in_msg[2] > 0) {
+                handle_note_on(inst, in_msg[1]);
+            } else if (type == 0x80 || (type == 0x90 && in_msg[2] == 0)) {
+                handle_note_off(inst, in_msg[1]);
+            }
+        }
+    }
 
     out_msgs[0][0] = in_msg[0];
     out_msgs[0][1] = in_len > 1 ? in_msg[1] : 0;
@@ -279,6 +338,9 @@ static void param_lfo_set_param(void *instance, const char *key, const char *val
     else if (strcmp(key, "polarity") == 0) {
         inst->bipolar = parse_bipolar(val, inst->bipolar);
     }
+    else if (strcmp(key, "retrigger") == 0) {
+        inst->retrigger = parse_toggle(val, inst->retrigger);
+    }
     else if (strcmp(key, "enable") == 0) {
         int new_enabled = parse_toggle(val, inst->enabled);
         if (!new_enabled && inst->modulation_active) {
@@ -318,6 +380,9 @@ static void param_lfo_set_param(void *instance, const char *key, const char *val
         }
         if (json_get_string(val, "polarity", text, sizeof(text))) {
             inst->bipolar = parse_bipolar(text, inst->bipolar);
+        }
+        if (json_get_string(val, "retrigger", text, sizeof(text))) {
+            inst->retrigger = parse_toggle(text, inst->retrigger);
         }
         if (json_get_string(val, "enable", text, sizeof(text))) {
             int new_enabled = parse_toggle(text, inst->enabled);
@@ -362,6 +427,9 @@ static int param_lfo_get_param(void *instance, const char *key, char *buf, int b
     if (strcmp(key, "polarity") == 0) {
         return snprintf(buf, buf_len, "%s", bipolar_to_string(inst->bipolar));
     }
+    if (strcmp(key, "retrigger") == 0) {
+        return snprintf(buf, buf_len, "%s", inst->retrigger ? "on" : "off");
+    }
     if (strcmp(key, "enable") == 0) {
         return snprintf(buf, buf_len, "%s", inst->enabled ? "on" : "off");
     }
@@ -374,12 +442,13 @@ static int param_lfo_get_param(void *instance, const char *key, char *buf, int b
     if (strcmp(key, "state") == 0) {
         return snprintf(buf,
                         buf_len,
-                        "{\"waveform\":\"%s\",\"rate_hz\":%.6f,\"depth\":%.6f,\"offset\":%.6f,\"polarity\":\"%s\",\"enable\":\"%s\",\"target_component\":\"%s\",\"target_param\":\"%s\"}",
+                        "{\"waveform\":\"%s\",\"rate_hz\":%.6f,\"depth\":%.6f,\"offset\":%.6f,\"polarity\":\"%s\",\"retrigger\":\"%s\",\"enable\":\"%s\",\"target_component\":\"%s\",\"target_param\":\"%s\"}",
                         waveform_to_string(inst->waveform),
                         inst->rate_hz,
                         inst->depth,
                         inst->offset,
                         bipolar_to_string(inst->bipolar),
+                        inst->retrigger ? "on" : "off",
                         inst->enabled ? "on" : "off",
                         inst->target_component,
                         inst->target_param);
@@ -391,6 +460,7 @@ static int param_lfo_get_param(void *instance, const char *key, char *buf, int b
             "{\"key\":\"depth\",\"name\":\"Depth\",\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.25,\"step\":0.01},"
             "{\"key\":\"offset\",\"name\":\"Offset\",\"type\":\"float\",\"min\":-1.0,\"max\":1.0,\"default\":0.0,\"step\":0.01},"
             "{\"key\":\"polarity\",\"name\":\"Polarity\",\"type\":\"enum\",\"options\":[\"bipolar\",\"unipolar\"],\"default\":0},"
+            "{\"key\":\"retrigger\",\"name\":\"Retrigger\",\"type\":\"enum\",\"options\":[\"off\",\"on\"],\"default\":0},"
             "{\"key\":\"enable\",\"name\":\"Enable\",\"type\":\"enum\",\"options\":[\"off\",\"on\"],\"default\":0},"
             "{\"key\":\"target_component\",\"name\":\"Target Comp\",\"type\":\"enum\",\"options\":[\"synth\",\"fx1\",\"fx2\",\"midi_fx1\",\"midi_fx2\"],\"default\":0},"
             "{\"key\":\"target_param\",\"name\":\"Target Param\",\"type\":\"filepath\",\"default\":\"\"}"

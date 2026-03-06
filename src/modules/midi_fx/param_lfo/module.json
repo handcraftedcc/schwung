@@ -61,6 +61,13 @@
               "default": 0
             },
             {
+              "key": "retrigger",
+              "name": "Retrigger",
+              "type": "enum",
+              "options": ["off", "on"],
+              "default": 0
+            },
+            {
               "key": "target_component",
               "name": "Target Comp",
               "type": "enum",
