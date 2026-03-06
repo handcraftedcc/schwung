@@ -6622,7 +6622,10 @@ function drawHierarchyEditor() {
                 /* Only fetch param value if this item is visible on screen */
                 let displayVal = "";
                 if (idx >= visibleStart && idx < visibleEnd) {
-                    const val = getSlotParam(hierEditorSlot, buildHierarchyParamKey(key));
+                    const fullKey = buildHierarchyParamKey(key);
+                    const usingStableEditVal = hierEditorEditMode &&
+                                               hierEditorEditKey === fullKey && hierEditorEditValue !== null;
+                    const val = usingStableEditVal ? String(hierEditorEditValue) : getSlotParam(hierEditorSlot, fullKey);
                     displayVal = val !== null ? formatHierDisplayValue(key, val) : "";
                 }
                 return { label, value: displayVal, key };
