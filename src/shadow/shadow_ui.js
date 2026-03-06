@@ -5036,6 +5036,8 @@ function getParamLfoPickerTargets(slot, componentKey) {
 
 function getNumericParamsForTarget(slot, target) {
     const params = [];
+    const seen = new Set();
+    const chainMetaByKey = new Map();
     const chainParamsJson = getSlotParam(slot, `${target}:chain_params`);
     if (!chainParamsJson) return params;
 
@@ -5044,12 +5046,69 @@ function getNumericParamsForTarget(slot, target) {
         if (!Array.isArray(chainParams)) return params;
         for (const p of chainParams) {
             if (!p || !p.key) continue;
+            chainMetaByKey.set(p.key, p);
+        }
+
+        const hierarchyJson = getSlotParam(slot, `${target}:ui_hierarchy`);
+        if (hierarchyJson) {
+            try {
+                const hierarchy = JSON.parse(hierarchyJson);
+                const levels = hierarchy && hierarchy.levels && typeof hierarchy.levels === "object"
+                    ? hierarchy.levels : null;
+                if (levels) {
+                    for (const levelName of Object.keys(levels)) {
+                        const level = levels[levelName];
+                        if (!level || !Array.isArray(level.params)) continue;
+
+                        const childPrefix = (typeof level.child_prefix === "string") ? level.child_prefix : "";
+                        const rawChildCount = parseInt(level.child_count, 10);
+                        const childCount = Number.isFinite(rawChildCount) ? Math.max(0, rawChildCount) : 0;
+                        const childLabel = (typeof level.child_label === "string" && level.child_label)
+                            ? level.child_label : "Item";
+
+                        for (const entry of level.params) {
+                            const key = (typeof entry === "string") ? entry : (entry && entry.key ? entry.key : "");
+                            if (!key) continue;
+
+                            const meta = chainMetaByKey.get(key);
+                            if (!meta) continue;
+                            const type = (meta.type || "").toLowerCase();
+                            const isNumeric = type === "float" || type === "int" ||
+                                (!type && (meta.min !== undefined || meta.max !== undefined));
+                            if (!isNumeric) continue;
+
+                            if (childPrefix && childCount > 0) {
+                                for (let i = 0; i < childCount; i++) {
+                                    const fullKey = `${childPrefix}${i}_${key}`;
+                                    if (seen.has(fullKey)) continue;
+                                    const baseLabel = meta.name || meta.label || key;
+                                    params.push({ key: fullKey, label: `${childLabel} ${i + 1} ${baseLabel}` });
+                                    seen.add(fullKey);
+                                }
+                            } else {
+                                if (seen.has(key)) continue;
+                                params.push({ key, label: meta.name || meta.label || key });
+                                seen.add(key);
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                /* Ignore ui_hierarchy parse errors and fall back to chain_params list. */
+            }
+        }
+
+        if (params.length > 0) return params;
+
+        for (const p of chainParams) {
+            if (!p || !p.key) continue;
             const type = (p.type || "").toLowerCase();
             const isNumeric = type === "float" || type === "int" ||
                 (!type && (p.min !== undefined || p.max !== undefined));
             if (!isNumeric) continue;
-            if (!params.find(existing => existing.key === p.key)) {
+            if (!seen.has(p.key)) {
                 params.push({ key: p.key, label: p.name || p.label || p.key });
+                seen.add(p.key);
             }
         }
     } catch (e) {

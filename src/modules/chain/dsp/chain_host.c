@@ -6991,6 +6991,35 @@ static int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const ch
 }
 
 /*
+ * Match a modulation key against chain_params metadata.
+ * Supports exact matches and child-prefixed keys (e.g. nvram_tone_0_cutofffrequency)
+ * where metadata may only expose the suffix key (e.g. cutofffrequency).
+ */
+static int chain_param_key_matches(const char *requested_key, const char *meta_key) {
+    if (!requested_key || !meta_key) return 0;
+    if (strcmp(requested_key, meta_key) == 0) return 1;
+
+    size_t req_len = strlen(requested_key);
+    size_t meta_len = strlen(meta_key);
+    if (req_len <= meta_len + 1) return 0;
+
+    const char *suffix = requested_key + (req_len - meta_len);
+    if (strcmp(suffix, meta_key) != 0) return 0;
+    if (*(suffix - 1) != '_') return 0;
+
+    const char *prefix_end = suffix - 1;
+    int has_digit = 0;
+    for (const char *p = requested_key; p < prefix_end; p++) {
+        if (*p >= '0' && *p <= '9') {
+            has_digit = 1;
+            break;
+        }
+    }
+
+    return has_digit;
+}
+
+/*
  * Find parameter metadata by target and key.
  */
 static chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char *target, const char *key) {
@@ -6998,7 +7027,7 @@ static chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char 
 
     if (strcmp(target, "synth") == 0) {
         for (int i = 0; i < inst->synth_param_count; i++) {
-            if (strcmp(inst->synth_params[i].key, key) == 0) {
+            if (chain_param_key_matches(key, inst->synth_params[i].key)) {
                 return &inst->synth_params[i];
             }
         }
@@ -7006,7 +7035,7 @@ static chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char 
         int fx_slot = atoi(target + 2) - 1;
         if (fx_slot >= 0 && fx_slot < MAX_AUDIO_FX) {
             for (int i = 0; i < inst->fx_param_counts[fx_slot]; i++) {
-                if (strcmp(inst->fx_params[fx_slot][i].key, key) == 0) {
+                if (chain_param_key_matches(key, inst->fx_params[fx_slot][i].key)) {
                     return &inst->fx_params[fx_slot][i];
                 }
             }
@@ -7019,7 +7048,7 @@ static chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char 
         }
         if (midi_fx_slot >= 0 && midi_fx_slot < MAX_MIDI_FX) {
             for (int i = 0; i < inst->midi_fx_param_counts[midi_fx_slot]; i++) {
-                if (strcmp(inst->midi_fx_params[midi_fx_slot][i].key, key) == 0) {
+                if (chain_param_key_matches(key, inst->midi_fx_params[midi_fx_slot][i].key)) {
                     return &inst->midi_fx_params[midi_fx_slot][i];
                 }
             }
@@ -7059,7 +7088,7 @@ static chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char 
 
     if (strcmp(target, "synth") == 0) {
         for (int i = 0; i < inst->synth_param_count; i++) {
-            if (strcmp(inst->synth_params[i].key, key) == 0) {
+            if (chain_param_key_matches(key, inst->synth_params[i].key)) {
                 return &inst->synth_params[i];
             }
         }
@@ -7067,7 +7096,7 @@ static chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char 
         int fx_slot = atoi(target + 2) - 1;
         if (fx_slot >= 0 && fx_slot < MAX_AUDIO_FX) {
             for (int i = 0; i < inst->fx_param_counts[fx_slot]; i++) {
-                if (strcmp(inst->fx_params[fx_slot][i].key, key) == 0) {
+                if (chain_param_key_matches(key, inst->fx_params[fx_slot][i].key)) {
                     return &inst->fx_params[fx_slot][i];
                 }
             }
@@ -7079,7 +7108,7 @@ static chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char 
         }
         if (midi_fx_slot >= 0 && midi_fx_slot < MAX_MIDI_FX) {
             for (int i = 0; i < inst->midi_fx_param_counts[midi_fx_slot]; i++) {
-                if (strcmp(inst->midi_fx_params[midi_fx_slot][i].key, key) == 0) {
+                if (chain_param_key_matches(key, inst->midi_fx_params[midi_fx_slot][i].key)) {
                     return &inst->midi_fx_params[midi_fx_slot][i];
                 }
             }

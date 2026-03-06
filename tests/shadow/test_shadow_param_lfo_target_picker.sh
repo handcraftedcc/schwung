@@ -23,6 +23,14 @@ if ! rg -q 'getNumericParamsForTarget\(' "$file"; then
   echo "FAIL: missing numeric-only target param filter" >&2
   exit 1
 fi
+if ! rg -q 'child_prefix' "$file"; then
+  echo "FAIL: picker is not checking child_prefix hierarchy metadata" >&2
+  exit 1
+fi
+if ! rg -q '\$\{childPrefix\}\$\{i\}_\$\{key\}' "$file"; then
+  echo "FAIL: picker does not expand child-prefixed parameter keys" >&2
+  exit 1
+fi
 if ! rg -q 'setView\(VIEWS\.PARAM_LFO_TARGET_PICKER\)' "$file"; then
   echo "FAIL: picker entry does not use dedicated view" >&2
   exit 1
