@@ -153,7 +153,7 @@ typedef struct {
 #define MAX_MOD_SOURCES 8
 #define MOD_PARAM_CACHE_REFRESH_MS 250
 #define MOD_FLOAT_CHANGE_EPSILON 0.000001f
-#define MOD_MINIJV_INT_BLOCK_DIVIDER 4
+#define MOD_MINIJV_INT_MIN_INTERVAL_MS 50
 
 /* Runtime modulation target state (non-destructive overlay). */
 typedef struct mod_target_state {
@@ -166,7 +166,7 @@ typedef struct mod_target_state {
     float contribution;
     float effective_value;
     float last_applied_value;
-    uint32_t apply_tick_counter;
+    uint64_t last_applied_ms;
     int has_last_applied;
     float min_val;
     float max_val;
@@ -4259,6 +4259,14 @@ static void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_s
 
     chain_mod_recompute_effective(entry);
 
+    uint64_t now_ms = 0;
+    uint32_t min_interval_ms = 0;
+    if (strcmp(entry->target, "synth") == 0 &&
+        strcmp(inst->current_synth_module, "minijv") == 0 &&
+        (entry->type == KNOB_TYPE_INT || entry->type == KNOB_TYPE_ENUM)) {
+        min_interval_ms = MOD_MINIJV_INT_MIN_INTERVAL_MS;
+    }
+
     if (!force_write) {
         if (entry->has_last_applied) {
             if (entry->type == KNOB_TYPE_INT || entry->type == KNOB_TYPE_ENUM) {
@@ -4270,15 +4278,11 @@ static void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_s
             }
         }
 
-        if ((entry->type == KNOB_TYPE_INT || entry->type == KNOB_TYPE_ENUM) &&
-            strcmp(entry->target, "synth") == 0 &&
-            strcmp(inst->current_synth_module, "minijv") == 0) {
-            uint32_t tick = entry->apply_tick_counter++;
-            if ((tick % MOD_MINIJV_INT_BLOCK_DIVIDER) != 0) {
+        if (min_interval_ms > 0) {
+            now_ms = get_time_ms();
+            if (entry->last_applied_ms > 0 && (now_ms - entry->last_applied_ms) < min_interval_ms) {
                 return;
             }
-        } else {
-            entry->apply_tick_counter++;
         }
     }
 
@@ -4292,6 +4296,8 @@ static void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_s
     int rc = chain_mod_set_param_string(inst, entry->target, entry->param, val_str);
     if (rc == 0) {
         entry->last_applied_value = entry->effective_value;
+        if (now_ms == 0) now_ms = get_time_ms();
+        entry->last_applied_ms = now_ms;
         entry->has_last_applied = 1;
     }
 }

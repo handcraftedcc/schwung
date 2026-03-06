@@ -3,8 +3,8 @@ set -euo pipefail
 
 file="src/modules/chain/dsp/chain_host.c"
 
-if ! rg -q '#define MOD_MINIJV_INT_BLOCK_DIVIDER 4' "$file"; then
-  echo "FAIL: missing Mini-JV modulation safety divider constant" >&2
+if ! rg -q '#define MOD_MINIJV_INT_MIN_INTERVAL_MS 50' "$file"; then
+  echo "FAIL: missing Mini-JV modulation min-interval constant" >&2
   exit 1
 fi
 if ! rg -q 'static void chain_mod_apply_effective_value\(chain_instance_t \*inst, mod_target_state_t \*entry, int force_write\)' "$file"; then
@@ -13,6 +13,10 @@ if ! rg -q 'static void chain_mod_apply_effective_value\(chain_instance_t \*inst
 fi
 if ! rg -q 'strcmp\(inst->current_synth_module, "minijv"\) == 0' "$file"; then
   echo "FAIL: missing Mini-JV specific modulation throttle guard" >&2
+  exit 1
+fi
+if ! rg -q 'entry->last_applied_ms > 0 && \(now_ms - entry->last_applied_ms\) < min_interval_ms' "$file"; then
+  echo "FAIL: missing Mini-JV time-based modulation throttle check" >&2
   exit 1
 fi
 if ! rg -q 'if \(\(int\)entry->effective_value == \(int\)entry->last_applied_value\)' "$file"; then
