@@ -520,16 +520,16 @@ static int build_chain_params_json(char *buf, int buf_len) {
             first = 0; \
         } while (0)
 
-        ADD_PARAM("{\"key\":\"lfo%d_waveform\",\"name\":\"LFO %d Wave\",\"type\":\"enum\",\"options\":[\"sine\",\"triangle\",\"square\",\"saw_up\",\"random\",\"drunk\"],\"default\":0}", idx, idx);
-        ADD_PARAM("{\"key\":\"lfo%d_rate_hz\",\"name\":\"LFO %d Rate\",\"type\":\"float\",\"min\":0.01,\"max\":20.0,\"default\":1.0,\"step\":0.01}", idx, idx);
-        ADD_PARAM("{\"key\":\"lfo%d_phase\",\"name\":\"LFO %d Phase\",\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.0,\"step\":0.01}", idx, idx);
-        ADD_PARAM("{\"key\":\"lfo%d_depth\",\"name\":\"LFO %d Depth\",\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.25,\"step\":0.01}", idx, idx);
-        ADD_PARAM("{\"key\":\"lfo%d_offset\",\"name\":\"LFO %d Offset\",\"type\":\"float\",\"min\":-1.0,\"max\":1.0,\"default\":0.0,\"step\":0.01}", idx, idx);
-        ADD_PARAM("{\"key\":\"lfo%d_polarity\",\"name\":\"LFO %d Polarity\",\"type\":\"enum\",\"options\":[\"bipolar\",\"unipolar\"],\"default\":0}", idx, idx);
-        ADD_PARAM("{\"key\":\"lfo%d_retrigger\",\"name\":\"LFO %d Retrigger\",\"type\":\"enum\",\"options\":[\"off\",\"on\"],\"default\":0}", idx, idx);
-        ADD_PARAM("{\"key\":\"lfo%d_enable\",\"name\":\"LFO %d Enable\",\"type\":\"enum\",\"options\":[\"off\",\"on\"],\"default\":0}", idx, idx);
-        ADD_PARAM("{\"key\":\"lfo%d_target_component\",\"name\":\"LFO %d Target Comp\",\"type\":\"enum\",\"options\":[\"synth\",\"fx1\",\"fx2\",\"midi_fx1\",\"midi_fx2\"],\"default\":0}", idx, idx);
-        ADD_PARAM("{\"key\":\"lfo%d_target_param\",\"name\":\"LFO %d Target Param\",\"type\":\"filepath\",\"default\":\"\"}", idx, idx);
+        ADD_PARAM("{\"key\":\"lfo%d_waveform\",\"name\":\"Wave\",\"type\":\"enum\",\"options\":[\"sine\",\"triangle\",\"square\",\"saw_up\",\"random\",\"drunk\"],\"default\":0}", idx);
+        ADD_PARAM("{\"key\":\"lfo%d_rate_hz\",\"name\":\"Rate\",\"type\":\"float\",\"min\":0.01,\"max\":20.0,\"default\":1.0,\"step\":0.01}", idx);
+        ADD_PARAM("{\"key\":\"lfo%d_phase\",\"name\":\"Phase\",\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.0,\"step\":0.01}", idx);
+        ADD_PARAM("{\"key\":\"lfo%d_depth\",\"name\":\"Depth\",\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.25,\"step\":0.01}", idx);
+        ADD_PARAM("{\"key\":\"lfo%d_offset\",\"name\":\"Offset\",\"type\":\"float\",\"min\":-1.0,\"max\":1.0,\"default\":0.0,\"step\":0.01}", idx);
+        ADD_PARAM("{\"key\":\"lfo%d_polarity\",\"name\":\"Polarity\",\"type\":\"enum\",\"options\":[\"bipolar\",\"unipolar\"],\"default\":0}", idx);
+        ADD_PARAM("{\"key\":\"lfo%d_retrigger\",\"name\":\"Retrigger\",\"type\":\"enum\",\"options\":[\"off\",\"on\"],\"default\":0}", idx);
+        ADD_PARAM("{\"key\":\"lfo%d_enable\",\"name\":\"Enable\",\"type\":\"enum\",\"options\":[\"off\",\"on\"],\"default\":0}", idx);
+        ADD_PARAM("{\"key\":\"lfo%d_target_component\",\"name\":\"Target Comp\",\"type\":\"enum\",\"options\":[\"synth\",\"fx1\",\"fx2\",\"midi_fx1\",\"midi_fx2\"],\"default\":0}", idx);
+        ADD_PARAM("{\"key\":\"lfo%d_target_param\",\"name\":\"Target Param\",\"type\":\"filepath\",\"default\":\"\"}", idx);
 
 #undef ADD_PARAM
     }

@@ -18,13 +18,13 @@
           ],
           "knobs": [
             "lfo1_enable",
-            "lfo2_enable",
-            "lfo3_enable",
             "lfo1_rate_hz",
-            "lfo2_rate_hz",
-            "lfo3_rate_hz",
             "lfo1_depth",
-            "lfo2_depth"
+            "lfo1_offset",
+            "lfo2_enable",
+            "lfo2_rate_hz",
+            "lfo2_depth",
+            "lfo2_offset"
           ]
         },
         "lfo1": {

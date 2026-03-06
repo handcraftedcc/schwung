@@ -3,6 +3,10 @@ set -euo pipefail
 
 meta="src/modules/midi_fx/param_lfo/module.json"
 
+if ! rg -U -q '"root": \{(?s).*?"knobs": \[\s*"lfo1_enable",\s*"lfo1_rate_hz",\s*"lfo1_depth",\s*"lfo1_offset",\s*"lfo2_enable",\s*"lfo2_rate_hz",\s*"lfo2_depth",\s*"lfo2_offset"\s*\]' "$meta"; then
+  echo "FAIL: root knob layout is not mapped to LFO1/LFO2 on-rate-depth-offset" >&2
+  exit 1
+fi
 if ! rg -q '"knobs": \["lfo1_enable", "lfo1_waveform", "lfo1_rate_hz", "lfo1_phase", "lfo1_depth", "lfo1_offset", "lfo1_polarity", "lfo1_retrigger"\]' "$meta"; then
   echo "FAIL: lfo1 knob layout is not mapped to all non-target parameters" >&2
   exit 1
@@ -20,4 +24,4 @@ if rg -q '"knobs": \[[^]]*"lfo[1-3]_target_component"' "$meta" || rg -q '"knobs"
   exit 1
 fi
 
-echo "PASS: param_lfo knob layouts map non-target parameters for lfo1-lfo3"
+echo "PASS: param_lfo root and submenu knob layouts match expected mappings"
