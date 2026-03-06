@@ -151,6 +151,7 @@ typedef struct {
 
 #define MAX_MOD_TARGETS 32
 #define MAX_MOD_SOURCES 8
+#define MOD_PARAM_CACHE_REFRESH_MS 250
 
 /* Runtime modulation target state (non-destructive overlay). */
 typedef struct mod_target_state {
@@ -450,6 +451,9 @@ typedef struct chain_instance {
     int mod_target_count;
     mod_source_state_t mod_sources[MAX_MOD_SOURCES];
     int mod_source_count;
+    uint64_t mod_param_refresh_ms_synth;
+    uint64_t mod_param_refresh_ms_fx[MAX_AUDIO_FX];
+    uint64_t mod_param_refresh_ms_midi_fx[MAX_MIDI_FX];
 
     /* Mute countdown after patch switch */
     int mute_countdown;
@@ -655,8 +659,10 @@ static int chain_get_clock_status(void);
 static int scan_patches(const char *module_dir);
 static void unload_patch(void);
 static int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count);
+static int parse_chain_params_array_json(const char *json_array, chain_param_info_t *params, int max_params);
 static chain_param_info_t *find_param_info(chain_param_info_t *params, int count, const char *key);
 static chain_param_info_t *find_param_by_key(chain_instance_t *inst, const char *target, const char *key);
+static int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *target);
 static float dsp_value_to_float(const char *val_str, chain_param_info_t *pinfo, float fallback);
 static void v2_chain_log(chain_instance_t *inst, const char *msg);  /* Forward declaration */
 static void parse_debug_log(const char *msg);  /* Forward declaration */
@@ -677,6 +683,7 @@ static void chain_mod_update_base_from_set_param(chain_instance_t *inst,
                                                  const char *param,
                                                  const char *val);
 static void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_state_t *entry);
+static void chain_mod_clear_target_entry(chain_instance_t *inst, mod_target_state_t *entry);
 static int chain_mod_get_base_for_subkey(chain_instance_t *inst,
                                          const char *target,
                                          const char *subkey,
@@ -1505,6 +1512,7 @@ static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
     inst->midi_fx_handles[slot] = handle;
     inst->midi_fx_plugins[slot] = api;
     inst->midi_fx_instances[slot] = instance;
+    inst->mod_param_refresh_ms_midi_fx[slot] = 0;
     strncpy(inst->current_midi_fx_modules[slot], fx_name, MAX_NAME_LEN - 1);
     inst->current_midi_fx_modules[slot][MAX_NAME_LEN - 1] = '\0';
 
@@ -1584,6 +1592,7 @@ static void v2_unload_all_midi_fx(chain_instance_t *inst) {
         inst->midi_fx_instances[i] = NULL;
         inst->current_midi_fx_modules[i][0] = '\0';
         inst->midi_fx_param_counts[i] = 0;
+        inst->mod_param_refresh_ms_midi_fx[i] = 0;
         inst->midi_fx_ui_hierarchy[i][0] = '\0';
     }
     inst->midi_fx_count = 0;
@@ -2433,6 +2442,52 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
 
     free(json);
     return 0;
+}
+
+/*
+ * Parse a runtime chain_params JSON array (as returned by plugin get_param).
+ * Returns parsed count on success (including 0), or -1 on malformed input.
+ */
+static int parse_chain_params_array_json(const char *json_array, chain_param_info_t *params, int max_params) {
+    if (!json_array || !params || max_params <= 0) return -1;
+
+    const char *arr_start = strchr(json_array, '[');
+    if (!arr_start) return -1;
+
+    int depth = 1;
+    const char *arr_end = arr_start + 1;
+    while (*arr_end && depth > 0) {
+        if (*arr_end == '[') depth++;
+        else if (*arr_end == ']') depth--;
+        arr_end++;
+    }
+    if (depth != 0) return -1;
+
+    int count = 0;
+    const char *pos = arr_start + 1;
+    while (pos < arr_end && count < max_params) {
+        const char *obj_start = strchr(pos, '{');
+        if (!obj_start || obj_start >= arr_end) break;
+
+        int obj_depth = 0;
+        const char *obj_end = obj_start;
+        do {
+            if (*obj_end == '{') obj_depth++;
+            else if (*obj_end == '}') obj_depth--;
+            obj_end++;
+        } while (obj_end < arr_end && obj_depth > 0);
+
+        if (obj_depth != 0) break;
+
+        chain_param_info_t parsed;
+        if (parse_param_object(obj_start, &parsed) == 0) {
+            params[count++] = parsed;
+        }
+
+        pos = obj_end;
+    }
+
+    return count;
 }
 
 /* Look up parameter info by key in a param list */
@@ -4209,6 +4264,21 @@ static void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_s
     chain_mod_set_param_string(inst, entry->target, entry->param, val_str);
 }
 
+static void chain_mod_clear_target_entry(chain_instance_t *inst, mod_target_state_t *entry) {
+    if (!inst || !entry || !entry->active) return;
+
+    entry->enabled = 0;
+    entry->contribution = 0.0f;
+    entry->effective_value = entry->base_value;
+    chain_mod_apply_effective_value(inst, entry);
+    memset(entry, 0, sizeof(*entry));
+
+    while (inst->mod_target_count > 0 &&
+           !inst->mod_targets[inst->mod_target_count - 1].active) {
+        inst->mod_target_count--;
+    }
+}
+
 /* Optional getter helper: key suffix ':base' returns non-modulated base value.
  * Example: 'synth:cutoff:base' -> base cutoff while modulation is active. */
 static int chain_mod_get_base_for_subkey(chain_instance_t *inst,
@@ -4263,7 +4333,13 @@ static int chain_mod_emit_value(void *ctx,
     }
 
     chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
-    if (!pinfo) return -1;
+    if (!pinfo) {
+        mod_target_state_t *stale = chain_mod_find_target_entry(inst, target, param);
+        if (stale && stale->active && strcmp(stale->source_id, source_id) == 0) {
+            chain_mod_clear_target_entry(inst, stale);
+        }
+        return -1;
+    }
     if (pinfo->type == KNOB_TYPE_ENUM) return -1;  /* v1 numeric only */
 
     mod_target_state_t *entry = chain_mod_alloc_target_entry(inst, target, param);
@@ -4312,17 +4388,7 @@ static void chain_mod_clear_source(void *ctx, const char *source_id) {
         mod_target_state_t *entry = &inst->mod_targets[i];
         if (!entry->active) continue;
         if (!clear_all && strcmp(entry->source_id, source_id) != 0) continue;
-
-        entry->enabled = 0;
-        entry->contribution = 0.0f;
-        entry->effective_value = entry->base_value;
-        chain_mod_apply_effective_value(inst, entry);
-        memset(entry, 0, sizeof(*entry));
-    }
-
-    while (inst->mod_target_count > 0 &&
-           !inst->mod_targets[inst->mod_target_count - 1].active) {
-        inst->mod_target_count--;
+        chain_mod_clear_target_entry(inst, entry);
     }
 }
 
@@ -4466,6 +4532,7 @@ static void v2_unload_synth(chain_instance_t *inst) {
     inst->synth_instance = NULL;
     inst->current_synth_module[0] = '\0';
     inst->synth_param_count = 0;
+    inst->mod_param_refresh_ms_synth = 0;
     inst->synth_default_forward_channel = -1;
 }
 
@@ -4495,6 +4562,7 @@ static void v2_unload_all_audio_fx(chain_instance_t *inst) {
         inst->fx_is_v2[i] = 0;
         inst->fx_on_midi[i] = NULL;
         inst->fx_param_counts[i] = 0;
+        inst->mod_param_refresh_ms_fx[i] = 0;
         inst->current_fx_modules[i][0] = '\0';
     }
     inst->fx_count = 0;
@@ -4525,6 +4593,7 @@ static void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
     inst->fx_is_v2[slot] = 0;
     inst->fx_on_midi[slot] = NULL;
     inst->fx_param_counts[slot] = 0;
+    inst->mod_param_refresh_ms_fx[slot] = 0;
     inst->current_fx_modules[slot][0] = '\0';
 }
 
@@ -4620,6 +4689,7 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
         inst->current_fx_modules[slot][0] = '\0';
         return -1;
     }
+    inst->mod_param_refresh_ms_fx[slot] = 0;
 
     /* Update fx_count to include this slot */
     if (slot >= inst->fx_count) {
@@ -4727,6 +4797,7 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         inst->current_synth_module[0] = '\0';
         return -1;
     }
+    inst->mod_param_refresh_ms_synth = 0;
 
     /* Parse default_forward_channel from capabilities in module.json */
     inst->synth_default_forward_channel = -1;  /* Default: no forwarding preference */
@@ -4838,6 +4909,7 @@ static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
         inst->current_fx_modules[slot][0] = '\0';
         return -1;
     }
+    inst->mod_param_refresh_ms_fx[slot] = 0;
 
     inst->fx_count++;
 
@@ -6540,6 +6612,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             } else if (inst->fx_plugins[0] && inst->fx_plugins[0]->set_param) {
                 inst->fx_plugins[0]->set_param(subkey, val);
             }
+            if (strcmp(subkey, "plugin_id") == 0) {
+                inst->fx_param_counts[0] = 0;
+                inst->mod_param_refresh_ms_fx[0] = 0;
+            }
             inst->dirty = 1;
         }
     }
@@ -6573,6 +6649,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], subkey, val);
             } else if (inst->fx_plugins[1] && inst->fx_plugins[1]->set_param) {
                 inst->fx_plugins[1]->set_param(subkey, val);
+            }
+            if (strcmp(subkey, "plugin_id") == 0) {
+                inst->fx_param_counts[1] = 0;
+                inst->mod_param_refresh_ms_fx[1] = 0;
             }
             inst->dirty = 1;
         }
@@ -6843,9 +6923,79 @@ static float dsp_value_to_float(const char *val_str, chain_param_info_t *pinfo, 
 }
 
 /*
+ * Refresh target parameter metadata from runtime plugin chain_params.
+ * This allows modulation to resolve dynamic params that are not declared in
+ * static module.json metadata.
+ */
+static int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *target) {
+    if (!inst || !target) return -1;
+
+    char buf[8192];
+    int result = -1;
+    chain_param_info_t parsed[MAX_CHAIN_PARAMS];
+    int parsed_count = -1;
+
+    if (strcmp(target, "synth") == 0) {
+        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
+            result = inst->synth_plugin_v2->get_param(inst->synth_instance, "chain_params", buf, sizeof(buf));
+        } else if (inst->synth_plugin && inst->synth_plugin->get_param) {
+            result = inst->synth_plugin->get_param("chain_params", buf, sizeof(buf));
+        }
+        if (result <= 0) return -1;
+        parsed_count = parse_chain_params_array_json(buf, parsed, MAX_CHAIN_PARAMS);
+        if (parsed_count < 0) return -1;
+        memcpy(inst->synth_params, parsed, sizeof(chain_param_info_t) * (size_t)parsed_count);
+        inst->synth_param_count = parsed_count;
+        return parsed_count;
+    }
+
+    if (strncmp(target, "fx", 2) == 0) {
+        int fx_slot = atoi(target + 2) - 1;
+        if (fx_slot < 0 || fx_slot >= MAX_AUDIO_FX || fx_slot >= inst->fx_count) return -1;
+
+        if (inst->fx_is_v2[fx_slot] && inst->fx_plugins_v2[fx_slot] &&
+            inst->fx_instances[fx_slot] && inst->fx_plugins_v2[fx_slot]->get_param) {
+            result = inst->fx_plugins_v2[fx_slot]->get_param(inst->fx_instances[fx_slot], "chain_params", buf, sizeof(buf));
+        } else if (inst->fx_plugins[fx_slot] && inst->fx_plugins[fx_slot]->get_param) {
+            result = inst->fx_plugins[fx_slot]->get_param("chain_params", buf, sizeof(buf));
+        }
+        if (result <= 0) return -1;
+        parsed_count = parse_chain_params_array_json(buf, parsed, MAX_CHAIN_PARAMS);
+        if (parsed_count < 0) return -1;
+        memcpy(inst->fx_params[fx_slot], parsed, sizeof(chain_param_info_t) * (size_t)parsed_count);
+        inst->fx_param_counts[fx_slot] = parsed_count;
+        return parsed_count;
+    }
+
+    if (strncmp(target, "midi_fx", 7) == 0) {
+        int midi_fx_slot = 0;
+        if (target[7] != '\0') {
+            midi_fx_slot = atoi(target + 7) - 1;
+        }
+        if (midi_fx_slot < 0 || midi_fx_slot >= MAX_MIDI_FX || midi_fx_slot >= inst->midi_fx_count) return -1;
+        if (!inst->midi_fx_plugins[midi_fx_slot] || !inst->midi_fx_instances[midi_fx_slot]) return -1;
+
+        result = inst->midi_fx_plugins[midi_fx_slot]->get_param(inst->midi_fx_instances[midi_fx_slot],
+                                                                "chain_params",
+                                                                buf,
+                                                                sizeof(buf));
+        if (result <= 0) return -1;
+        parsed_count = parse_chain_params_array_json(buf, parsed, MAX_CHAIN_PARAMS);
+        if (parsed_count < 0) return -1;
+        memcpy(inst->midi_fx_params[midi_fx_slot], parsed, sizeof(chain_param_info_t) * (size_t)parsed_count);
+        inst->midi_fx_param_counts[midi_fx_slot] = parsed_count;
+        return parsed_count;
+    }
+
+    return -1;
+}
+
+/*
  * Find parameter metadata by target and key.
  */
 static chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char *target, const char *key) {
+    if (!inst || !target || !key || !key[0]) return NULL;
+
     if (strcmp(target, "synth") == 0) {
         for (int i = 0; i < inst->synth_param_count; i++) {
             if (strcmp(inst->synth_params[i].key, key) == 0) {
@@ -6875,6 +7025,67 @@ static chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char 
             }
         }
     }
+
+    /* Static metadata missed. Retry with runtime chain_params refresh, throttled
+     * to avoid re-parsing dynamic params every tick when a mapping is stale. */
+    uint64_t now_ms = get_time_ms();
+    uint64_t *last_refresh_ms = NULL;
+    if (strcmp(target, "synth") == 0) {
+        last_refresh_ms = &inst->mod_param_refresh_ms_synth;
+    } else if (strncmp(target, "fx", 2) == 0) {
+        int fx_slot = atoi(target + 2) - 1;
+        if (fx_slot >= 0 && fx_slot < MAX_AUDIO_FX) {
+            last_refresh_ms = &inst->mod_param_refresh_ms_fx[fx_slot];
+        }
+    } else if (strncmp(target, "midi_fx", 7) == 0) {
+        int midi_fx_slot = 0;
+        if (target[7] != '\0') {
+            midi_fx_slot = atoi(target + 7) - 1;
+        }
+        if (midi_fx_slot >= 0 && midi_fx_slot < MAX_MIDI_FX) {
+            last_refresh_ms = &inst->mod_param_refresh_ms_midi_fx[midi_fx_slot];
+        }
+    }
+
+    if (!last_refresh_ms) return NULL;
+    if (*last_refresh_ms > 0 && (now_ms - *last_refresh_ms) < MOD_PARAM_CACHE_REFRESH_MS) {
+        return NULL;
+    }
+    *last_refresh_ms = now_ms;
+
+    if (chain_mod_refresh_target_param_cache(inst, target) <= 0) {
+        return NULL;
+    }
+
+    if (strcmp(target, "synth") == 0) {
+        for (int i = 0; i < inst->synth_param_count; i++) {
+            if (strcmp(inst->synth_params[i].key, key) == 0) {
+                return &inst->synth_params[i];
+            }
+        }
+    } else if (strncmp(target, "fx", 2) == 0) {
+        int fx_slot = atoi(target + 2) - 1;
+        if (fx_slot >= 0 && fx_slot < MAX_AUDIO_FX) {
+            for (int i = 0; i < inst->fx_param_counts[fx_slot]; i++) {
+                if (strcmp(inst->fx_params[fx_slot][i].key, key) == 0) {
+                    return &inst->fx_params[fx_slot][i];
+                }
+            }
+        }
+    } else if (strncmp(target, "midi_fx", 7) == 0) {
+        int midi_fx_slot = 0;
+        if (target[7] != '\0') {
+            midi_fx_slot = atoi(target + 7) - 1;
+        }
+        if (midi_fx_slot >= 0 && midi_fx_slot < MAX_MIDI_FX) {
+            for (int i = 0; i < inst->midi_fx_param_counts[midi_fx_slot]; i++) {
+                if (strcmp(inst->midi_fx_params[midi_fx_slot][i].key, key) == 0) {
+                    return &inst->midi_fx_params[midi_fx_slot][i];
+                }
+            }
+        }
+    }
+
     return NULL;
 }
 
