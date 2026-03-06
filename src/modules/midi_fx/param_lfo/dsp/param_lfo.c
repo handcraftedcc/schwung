@@ -21,12 +21,15 @@ typedef enum {
     WAVE_SINE = 0,
     WAVE_TRIANGLE,
     WAVE_SQUARE,
-    WAVE_SAW_UP
+    WAVE_SAW_UP,
+    WAVE_RANDOM,
+    WAVE_DRUNK
 } lfo_waveform_t;
 
 typedef struct {
     lfo_waveform_t waveform;
     float phase;
+    float phase_offset;
     float rate_hz;
     float depth;
     float offset;
@@ -39,6 +42,9 @@ typedef struct {
     int modulation_active;
     uint8_t held_notes[128];
     int held_count;
+    float random_hold_value;
+    float drunk_start_value;
+    float drunk_target_value;
 } param_lfo_instance_t;
 
 static const host_api_v1_t *g_host = NULL;
@@ -47,6 +53,17 @@ static float clampf(float value, float min_val, float max_val) {
     if (value < min_val) return min_val;
     if (value > max_val) return max_val;
     return value;
+}
+
+static float wrap_phase(float phase) {
+    phase -= floorf(phase);
+    if (phase < 0.0f) phase += 1.0f;
+    return phase;
+}
+
+static float rand_bipolar(void) {
+    float unit = (float)rand() / (float)RAND_MAX;
+    return (unit * 2.0f) - 1.0f;
 }
 
 static int json_get_string(const char *json, const char *key, char *out, int out_len) {
@@ -113,6 +130,8 @@ static lfo_waveform_t parse_waveform(const char *val, lfo_waveform_t fallback) {
     if (strcmp(val, "triangle") == 0 || strcmp(val, "1") == 0) return WAVE_TRIANGLE;
     if (strcmp(val, "square") == 0 || strcmp(val, "2") == 0) return WAVE_SQUARE;
     if (strcmp(val, "saw_up") == 0 || strcmp(val, "3") == 0 || strcmp(val, "saw") == 0) return WAVE_SAW_UP;
+    if (strcmp(val, "random") == 0 || strcmp(val, "4") == 0 || strcmp(val, "rand") == 0) return WAVE_RANDOM;
+    if (strcmp(val, "drunk") == 0 || strcmp(val, "5") == 0) return WAVE_DRUNK;
 
     return fallback;
 }
@@ -122,6 +141,8 @@ static const char *waveform_to_string(lfo_waveform_t waveform) {
         case WAVE_TRIANGLE: return "triangle";
         case WAVE_SQUARE: return "square";
         case WAVE_SAW_UP: return "saw_up";
+        case WAVE_RANDOM: return "random";
+        case WAVE_DRUNK: return "drunk";
         case WAVE_SINE:
         default:
             return "sine";
@@ -149,7 +170,7 @@ static void reset_phase(param_lfo_instance_t *inst) {
 static float compute_lfo_sample(const param_lfo_instance_t *inst) {
     if (!inst) return 0.0f;
 
-    const float phase = inst->phase;
+    const float phase = wrap_phase(inst->phase + inst->phase_offset);
     switch (inst->waveform) {
         case WAVE_TRIANGLE:
             return 1.0f - 4.0f * fabsf(phase - 0.5f);
@@ -157,9 +178,24 @@ static float compute_lfo_sample(const param_lfo_instance_t *inst) {
             return (phase < 0.5f) ? 1.0f : -1.0f;
         case WAVE_SAW_UP:
             return (2.0f * phase) - 1.0f;
+        case WAVE_RANDOM:
+            return inst->random_hold_value;
+        case WAVE_DRUNK:
+            return inst->drunk_start_value + (inst->drunk_target_value - inst->drunk_start_value) * phase;
         case WAVE_SINE:
         default:
             return sinf(2.0f * (float)M_PI * phase);
+    }
+}
+
+static void advance_wave_cycle_state(param_lfo_instance_t *inst) {
+    if (!inst) return;
+
+    if (inst->waveform == WAVE_RANDOM) {
+        inst->random_hold_value = rand_bipolar();
+    } else if (inst->waveform == WAVE_DRUNK) {
+        inst->drunk_start_value = inst->drunk_target_value;
+        inst->drunk_target_value = clampf(inst->drunk_target_value + rand_bipolar() * 0.5f, -1.0f, 1.0f);
     }
 }
 
@@ -218,12 +254,16 @@ static void* param_lfo_create_instance(const char *module_dir, const char *confi
 
     inst->waveform = WAVE_SINE;
     inst->phase = 0.0f;
+    inst->phase_offset = 0.0f;
     inst->rate_hz = 1.0f;
     inst->depth = 0.25f;
     inst->offset = 0.0f;
     inst->bipolar = 1;
     inst->enabled = 0;
     inst->retrigger = 0;
+    inst->random_hold_value = rand_bipolar();
+    inst->drunk_start_value = 0.0f;
+    inst->drunk_target_value = rand_bipolar();
     inst->target_component[0] = '\0';
     inst->target_param[0] = '\0';
     snprintf(inst->source_id, sizeof(inst->source_id), "param_lfo_%p", (void *)inst);
@@ -299,9 +339,12 @@ static int param_lfo_tick(void *instance,
     float sample = compute_lfo_sample(inst);
 
     float phase_inc = inst->rate_hz * ((float)frames / (float)sample_rate);
-    inst->phase += phase_inc;
-    inst->phase -= floorf(inst->phase);
-    if (inst->phase < 0.0f) inst->phase += 1.0f;
+    float new_phase = inst->phase + phase_inc;
+    int wraps = (int)floorf(new_phase);
+    inst->phase = wrap_phase(new_phase);
+    for (int i = 0; i < wraps; i++) {
+        advance_wave_cycle_state(inst);
+    }
 
     int rc = g_host->mod_emit_value(g_host->mod_host_ctx,
                                     inst->source_id,
@@ -328,6 +371,9 @@ static void param_lfo_set_param(void *instance, const char *key, const char *val
     }
     else if (strcmp(key, "rate_hz") == 0) {
         inst->rate_hz = clampf((float)atof(val), 0.01f, 20.0f);
+    }
+    else if (strcmp(key, "phase") == 0) {
+        inst->phase_offset = clampf((float)atof(val), 0.0f, 1.0f);
     }
     else if (strcmp(key, "depth") == 0) {
         inst->depth = clampf((float)atof(val), 0.0f, 1.0f);
@@ -371,6 +417,9 @@ static void param_lfo_set_param(void *instance, const char *key, const char *val
         }
         if (json_get_float(val, "rate_hz", &f)) {
             inst->rate_hz = clampf(f, 0.01f, 20.0f);
+        }
+        if (json_get_float(val, "phase", &f)) {
+            inst->phase_offset = clampf(f, 0.0f, 1.0f);
         }
         if (json_get_float(val, "depth", &f)) {
             inst->depth = clampf(f, 0.0f, 1.0f);
@@ -418,6 +467,9 @@ static int param_lfo_get_param(void *instance, const char *key, char *buf, int b
     if (strcmp(key, "rate_hz") == 0) {
         return snprintf(buf, buf_len, "%.4f", inst->rate_hz);
     }
+    if (strcmp(key, "phase") == 0) {
+        return snprintf(buf, buf_len, "%.4f", inst->phase_offset);
+    }
     if (strcmp(key, "depth") == 0) {
         return snprintf(buf, buf_len, "%.4f", inst->depth);
     }
@@ -442,9 +494,10 @@ static int param_lfo_get_param(void *instance, const char *key, char *buf, int b
     if (strcmp(key, "state") == 0) {
         return snprintf(buf,
                         buf_len,
-                        "{\"waveform\":\"%s\",\"rate_hz\":%.6f,\"depth\":%.6f,\"offset\":%.6f,\"polarity\":\"%s\",\"retrigger\":\"%s\",\"enable\":\"%s\",\"target_component\":\"%s\",\"target_param\":\"%s\"}",
+                        "{\"waveform\":\"%s\",\"rate_hz\":%.6f,\"phase\":%.6f,\"depth\":%.6f,\"offset\":%.6f,\"polarity\":\"%s\",\"retrigger\":\"%s\",\"enable\":\"%s\",\"target_component\":\"%s\",\"target_param\":\"%s\"}",
                         waveform_to_string(inst->waveform),
                         inst->rate_hz,
+                        inst->phase_offset,
                         inst->depth,
                         inst->offset,
                         bipolar_to_string(inst->bipolar),
@@ -455,8 +508,9 @@ static int param_lfo_get_param(void *instance, const char *key, char *buf, int b
     }
     if (strcmp(key, "chain_params") == 0) {
         const char *params = "["
-            "{\"key\":\"waveform\",\"name\":\"Wave\",\"type\":\"enum\",\"options\":[\"sine\",\"triangle\",\"square\",\"saw_up\"],\"default\":0},"
+            "{\"key\":\"waveform\",\"name\":\"Wave\",\"type\":\"enum\",\"options\":[\"sine\",\"triangle\",\"square\",\"saw_up\",\"random\",\"drunk\"],\"default\":0},"
             "{\"key\":\"rate_hz\",\"name\":\"Rate\",\"type\":\"float\",\"min\":0.01,\"max\":20.0,\"default\":1.0,\"step\":0.01},"
+            "{\"key\":\"phase\",\"name\":\"Phase\",\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.0,\"step\":0.01},"
             "{\"key\":\"depth\",\"name\":\"Depth\",\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.25,\"step\":0.01},"
             "{\"key\":\"offset\",\"name\":\"Offset\",\"type\":\"float\",\"min\":-1.0,\"max\":1.0,\"default\":0.0,\"step\":0.01},"
             "{\"key\":\"polarity\",\"name\":\"Polarity\",\"type\":\"enum\",\"options\":[\"bipolar\",\"unipolar\"],\"default\":0},"
