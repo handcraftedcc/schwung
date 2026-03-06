@@ -12,11 +12,11 @@ if ! rg -q 'WAVE_DRUNK' "$file"; then
   echo "FAIL: drunk waveform enum is missing" >&2
   exit 1
 fi
-if ! rg -q 'phase \+ inst->phase_offset' "$file"; then
+if ! rg -q 'phase \+ lane->phase_offset' "$file"; then
   echo "FAIL: phase offset is not applied to waveform phase" >&2
   exit 1
 fi
-if ! rg -q 'strcmp\(key, "phase"\)' "$file"; then
+if ! rg -q 'strcmp\(subkey, "phase"\)' "$file"; then
   echo "FAIL: phase parameter handler is missing" >&2
   exit 1
 fi
@@ -24,15 +24,15 @@ if ! rg -q 'waveform_rate_multiplier' "$file"; then
   echo "FAIL: waveform rate multiplier helper is missing" >&2
   exit 1
 fi
-if ! rg -q 'inst->rate_hz \* waveform_rate_multiplier\(inst\)' "$file"; then
+if ! rg -q 'lane->rate_hz \* waveform_rate_multiplier\(lane\)' "$file"; then
   echo "FAIL: phase increment is not scaled by waveform rate multiplier" >&2
   exit 1
 fi
-if ! rg -q '"key\\":\\"waveform\\"' "$file" || ! rg -q 'random' "$file" || ! rg -q 'drunk' "$file"; then
+if ! rg -q 'lfo%d_waveform' "$file" || ! rg -q 'random' "$file" || ! rg -q 'drunk' "$file"; then
   echo "FAIL: chain params missing random/drunk waveform options" >&2
   exit 1
 fi
-if ! rg -q '"key\\":\\"phase\\"' "$file"; then
+if ! rg -q 'lfo%d_phase' "$file"; then
   echo "FAIL: chain params missing phase metadata" >&2
   exit 1
 fi
@@ -40,7 +40,7 @@ if ! rg -q '"options": \["sine", "triangle", "square", "saw_up", "random", "drun
   echo "FAIL: module metadata missing random/drunk waveform options" >&2
   exit 1
 fi
-if ! rg -q '"key": "phase"' "$meta"; then
+if ! rg -q '"key": "lfo1_phase"' "$meta" || ! rg -q '"key": "lfo3_phase"' "$meta"; then
   echo "FAIL: module metadata missing phase parameter" >&2
   exit 1
 fi

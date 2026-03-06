@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <math.h>
 
 #include "host/midi_fx_api_v1.h"
@@ -16,6 +17,8 @@
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+
+#define PARAM_LFO_COUNT 3
 
 typedef enum {
     WAVE_SINE = 0,
@@ -40,11 +43,15 @@ typedef struct {
     char target_param[32];
     char source_id[32];
     int modulation_active;
-    uint8_t held_notes[128];
-    int held_count;
     float random_hold_value;
     float drunk_start_value;
     float drunk_target_value;
+} param_lfo_lane_t;
+
+typedef struct {
+    param_lfo_lane_t lanes[PARAM_LFO_COUNT];
+    uint8_t held_notes[128];
+    int held_count;
 } param_lfo_instance_t;
 
 static const host_api_v1_t *g_host = NULL;
@@ -66,10 +73,25 @@ static float rand_bipolar(void) {
     return (unit * 2.0f) - 1.0f;
 }
 
+static int appendf(char *buf, int buf_len, int *offset, const char *fmt, ...) {
+    va_list ap;
+    int n;
+
+    if (!buf || !offset || *offset < 0 || *offset >= buf_len) return -1;
+
+    va_start(ap, fmt);
+    n = vsnprintf(buf + *offset, buf_len - *offset, fmt, ap);
+    va_end(ap);
+
+    if (n < 0 || n >= (buf_len - *offset)) return -1;
+    *offset += n;
+    return 0;
+}
+
 static int json_get_string(const char *json, const char *key, char *out, int out_len) {
     if (!json || !key || !out || out_len < 1) return 0;
 
-    char search[64];
+    char search[96];
     snprintf(search, sizeof(search), "\"%s\"", key);
     const char *pos = strstr(json, search);
     if (!pos) return 0;
@@ -93,7 +115,7 @@ static int json_get_string(const char *json, const char *key, char *out, int out
 static int json_get_float(const char *json, const char *key, float *out) {
     if (!json || !key || !out) return 0;
 
-    char search[64];
+    char search[96];
     snprintf(search, sizeof(search), "\"%s\"", key);
     const char *pos = strstr(json, search);
     if (!pos) return 0;
@@ -162,28 +184,28 @@ static const char *bipolar_to_string(int bipolar) {
     return bipolar ? "bipolar" : "unipolar";
 }
 
-static void reset_phase(param_lfo_instance_t *inst) {
-    if (!inst) return;
-    inst->phase = 0.0f;
+static void reset_phase(param_lfo_lane_t *lane) {
+    if (!lane) return;
+    lane->phase = 0.0f;
 }
 
-static float waveform_rate_multiplier(const param_lfo_instance_t *inst) {
-    if (!inst) return 1.0f;
+static float waveform_rate_multiplier(const param_lfo_lane_t *lane) {
+    if (!lane) return 1.0f;
 
-    if (inst->waveform == WAVE_DRUNK) {
+    if (lane->waveform == WAVE_DRUNK) {
         /* Keep low rates familiar, but make full-rate drunk movement much faster. */
-        const float norm = clampf(inst->rate_hz / 20.0f, 0.0f, 1.0f);
+        const float norm = clampf(lane->rate_hz / 20.0f, 0.0f, 1.0f);
         return 1.0f + (3.0f * norm);
     }
 
     return 1.0f;
 }
 
-static float compute_lfo_sample(const param_lfo_instance_t *inst) {
-    if (!inst) return 0.0f;
+static float compute_lfo_sample(const param_lfo_lane_t *lane) {
+    if (!lane) return 0.0f;
 
-    const float phase = wrap_phase(inst->phase + inst->phase_offset);
-    switch (inst->waveform) {
+    const float phase = wrap_phase(lane->phase + lane->phase_offset);
+    switch (lane->waveform) {
         case WAVE_TRIANGLE:
             return 1.0f - 4.0f * fabsf(phase - 0.5f);
         case WAVE_SQUARE:
@@ -191,33 +213,54 @@ static float compute_lfo_sample(const param_lfo_instance_t *inst) {
         case WAVE_SAW_UP:
             return (2.0f * phase) - 1.0f;
         case WAVE_RANDOM:
-            return inst->random_hold_value;
+            return lane->random_hold_value;
         case WAVE_DRUNK:
-            return inst->drunk_start_value + (inst->drunk_target_value - inst->drunk_start_value) * phase;
+            return lane->drunk_start_value + (lane->drunk_target_value - lane->drunk_start_value) * phase;
         case WAVE_SINE:
         default:
             return sinf(2.0f * (float)M_PI * phase);
     }
 }
 
-static void advance_wave_cycle_state(param_lfo_instance_t *inst) {
-    if (!inst) return;
+static void advance_wave_cycle_state(param_lfo_lane_t *lane) {
+    if (!lane) return;
 
-    if (inst->waveform == WAVE_RANDOM) {
-        inst->random_hold_value = rand_bipolar();
-    } else if (inst->waveform == WAVE_DRUNK) {
-        inst->drunk_start_value = inst->drunk_target_value;
-        inst->drunk_target_value = clampf(inst->drunk_target_value + rand_bipolar() * 0.5f, -1.0f, 1.0f);
+    if (lane->waveform == WAVE_RANDOM) {
+        lane->random_hold_value = rand_bipolar();
+    } else if (lane->waveform == WAVE_DRUNK) {
+        lane->drunk_start_value = lane->drunk_target_value;
+        lane->drunk_target_value = clampf(lane->drunk_target_value + rand_bipolar() * 0.5f, -1.0f, 1.0f);
     }
 }
 
-static void clear_modulation(param_lfo_instance_t *inst) {
-    if (!inst) return;
+static void clear_modulation(param_lfo_lane_t *lane) {
+    if (!lane) return;
 
     if (g_host && g_host->mod_clear_source) {
-        g_host->mod_clear_source(g_host->mod_host_ctx, inst->source_id);
+        g_host->mod_clear_source(g_host->mod_host_ctx, lane->source_id);
     }
-    inst->modulation_active = 0;
+    lane->modulation_active = 0;
+}
+
+static void init_lane(param_lfo_lane_t *lane, void *instance_ptr, int lane_index) {
+    if (!lane) return;
+
+    memset(lane, 0, sizeof(*lane));
+    lane->waveform = WAVE_SINE;
+    lane->phase = 0.0f;
+    lane->phase_offset = 0.0f;
+    lane->rate_hz = 1.0f;
+    lane->depth = 0.25f;
+    lane->offset = 0.0f;
+    lane->bipolar = 1;
+    lane->enabled = 0;
+    lane->retrigger = 0;
+    lane->random_hold_value = rand_bipolar();
+    lane->drunk_start_value = 0.0f;
+    lane->drunk_target_value = rand_bipolar();
+    lane->target_component[0] = '\0';
+    lane->target_param[0] = '\0';
+    snprintf(lane->source_id, sizeof(lane->source_id), "param_lfo_%p_%d", instance_ptr, lane_index + 1);
 }
 
 static void clear_held_notes(param_lfo_instance_t *inst) {
@@ -226,13 +269,24 @@ static void clear_held_notes(param_lfo_instance_t *inst) {
     inst->held_count = 0;
 }
 
+static void reset_all_phases(param_lfo_instance_t *inst) {
+    if (!inst) return;
+    for (int i = 0; i < PARAM_LFO_COUNT; i++) {
+        reset_phase(&inst->lanes[i]);
+    }
+}
+
 static void handle_note_on(param_lfo_instance_t *inst, uint8_t note) {
     if (!inst || note >= 128) return;
     if (inst->held_notes[note]) return;
 
     /* Retrigger only on fresh gate: no notes were previously held. */
-    if (inst->retrigger && inst->held_count == 0) {
-        reset_phase(inst);
+    if (inst->held_count == 0) {
+        for (int i = 0; i < PARAM_LFO_COUNT; i++) {
+            if (inst->lanes[i].retrigger) {
+                reset_phase(&inst->lanes[i]);
+            }
+        }
     }
 
     inst->held_notes[note] = 1;
@@ -257,6 +311,233 @@ static int target_component_valid(const char *component) {
            strcmp(component, "midi_fx2") == 0;
 }
 
+static int parse_lfo_key(const char *key, int *lane_idx, const char **subkey) {
+    if (!key || !lane_idx || !subkey) return 0;
+    if (strncmp(key, "lfo", 3) != 0) return 0;
+    if (key[3] < '1' || key[3] > ('0' + PARAM_LFO_COUNT)) return 0;
+    if (key[4] != '_') return 0;
+
+    *lane_idx = key[3] - '1';
+    *subkey = key + 5;
+    return 1;
+}
+
+static void set_lane_param(param_lfo_lane_t *lane, const char *subkey, const char *val) {
+    if (!lane || !subkey || !val) return;
+
+    if (strcmp(subkey, "waveform") == 0) {
+        lane->waveform = parse_waveform(val, lane->waveform);
+    }
+    else if (strcmp(subkey, "rate_hz") == 0) {
+        lane->rate_hz = clampf((float)atof(val), 0.01f, 20.0f);
+    }
+    else if (strcmp(subkey, "phase") == 0) {
+        lane->phase_offset = clampf((float)atof(val), 0.0f, 1.0f);
+    }
+    else if (strcmp(subkey, "depth") == 0) {
+        lane->depth = clampf((float)atof(val), 0.0f, 1.0f);
+    }
+    else if (strcmp(subkey, "offset") == 0) {
+        lane->offset = clampf((float)atof(val), -1.0f, 1.0f);
+    }
+    else if (strcmp(subkey, "polarity") == 0) {
+        lane->bipolar = parse_bipolar(val, lane->bipolar);
+    }
+    else if (strcmp(subkey, "retrigger") == 0) {
+        lane->retrigger = parse_toggle(val, lane->retrigger);
+    }
+    else if (strcmp(subkey, "enable") == 0) {
+        int new_enabled = parse_toggle(val, lane->enabled);
+        if (!new_enabled && lane->modulation_active) {
+            clear_modulation(lane);
+        }
+        lane->enabled = new_enabled;
+    }
+    else if (strcmp(subkey, "target_component") == 0) {
+        if (lane->modulation_active) {
+            clear_modulation(lane);
+        }
+        strncpy(lane->target_component, val, sizeof(lane->target_component) - 1);
+        lane->target_component[sizeof(lane->target_component) - 1] = '\0';
+    }
+    else if (strcmp(subkey, "target_param") == 0) {
+        if (lane->modulation_active) {
+            clear_modulation(lane);
+        }
+        strncpy(lane->target_param, val, sizeof(lane->target_param) - 1);
+        lane->target_param[sizeof(lane->target_param) - 1] = '\0';
+    }
+}
+
+static int get_lane_param(const param_lfo_lane_t *lane, const char *subkey, char *buf, int buf_len) {
+    if (!lane || !subkey || !buf || buf_len < 1) return -1;
+
+    if (strcmp(subkey, "waveform") == 0) {
+        return snprintf(buf, buf_len, "%s", waveform_to_string(lane->waveform));
+    }
+    if (strcmp(subkey, "rate_hz") == 0) {
+        return snprintf(buf, buf_len, "%.4f", lane->rate_hz);
+    }
+    if (strcmp(subkey, "phase") == 0) {
+        return snprintf(buf, buf_len, "%.4f", lane->phase_offset);
+    }
+    if (strcmp(subkey, "depth") == 0) {
+        return snprintf(buf, buf_len, "%.4f", lane->depth);
+    }
+    if (strcmp(subkey, "offset") == 0) {
+        return snprintf(buf, buf_len, "%.4f", lane->offset);
+    }
+    if (strcmp(subkey, "polarity") == 0) {
+        return snprintf(buf, buf_len, "%s", bipolar_to_string(lane->bipolar));
+    }
+    if (strcmp(subkey, "retrigger") == 0) {
+        return snprintf(buf, buf_len, "%s", lane->retrigger ? "on" : "off");
+    }
+    if (strcmp(subkey, "enable") == 0) {
+        return snprintf(buf, buf_len, "%s", lane->enabled ? "on" : "off");
+    }
+    if (strcmp(subkey, "target_component") == 0) {
+        return snprintf(buf, buf_len, "%s", lane->target_component);
+    }
+    if (strcmp(subkey, "target_param") == 0) {
+        return snprintf(buf, buf_len, "%s", lane->target_param);
+    }
+
+    return -1;
+}
+
+static void apply_state_json(param_lfo_instance_t *inst, const char *json) {
+    if (!inst || !json) return;
+
+    char key[64];
+    char text[64];
+    char val_buf[32];
+    float f = 0.0f;
+
+    for (int i = 0; i < PARAM_LFO_COUNT; i++) {
+        param_lfo_lane_t *lane = &inst->lanes[i];
+
+        snprintf(key, sizeof(key), "lfo%d_waveform", i + 1);
+        if (json_get_string(json, key, text, sizeof(text))) {
+            set_lane_param(lane, "waveform", text);
+        }
+
+        snprintf(key, sizeof(key), "lfo%d_rate_hz", i + 1);
+        if (json_get_float(json, key, &f)) {
+            snprintf(val_buf, sizeof(val_buf), "%.6f", f);
+            set_lane_param(lane, "rate_hz", val_buf);
+        }
+
+        snprintf(key, sizeof(key), "lfo%d_phase", i + 1);
+        if (json_get_float(json, key, &f)) {
+            snprintf(val_buf, sizeof(val_buf), "%.6f", f);
+            set_lane_param(lane, "phase", val_buf);
+        }
+
+        snprintf(key, sizeof(key), "lfo%d_depth", i + 1);
+        if (json_get_float(json, key, &f)) {
+            snprintf(val_buf, sizeof(val_buf), "%.6f", f);
+            set_lane_param(lane, "depth", val_buf);
+        }
+
+        snprintf(key, sizeof(key), "lfo%d_offset", i + 1);
+        if (json_get_float(json, key, &f)) {
+            snprintf(val_buf, sizeof(val_buf), "%.6f", f);
+            set_lane_param(lane, "offset", val_buf);
+        }
+
+        snprintf(key, sizeof(key), "lfo%d_polarity", i + 1);
+        if (json_get_string(json, key, text, sizeof(text))) {
+            set_lane_param(lane, "polarity", text);
+        }
+
+        snprintf(key, sizeof(key), "lfo%d_retrigger", i + 1);
+        if (json_get_string(json, key, text, sizeof(text))) {
+            set_lane_param(lane, "retrigger", text);
+        }
+
+        snprintf(key, sizeof(key), "lfo%d_enable", i + 1);
+        if (json_get_string(json, key, text, sizeof(text))) {
+            set_lane_param(lane, "enable", text);
+        }
+
+        snprintf(key, sizeof(key), "lfo%d_target_component", i + 1);
+        if (json_get_string(json, key, text, sizeof(text))) {
+            set_lane_param(lane, "target_component", text);
+        }
+
+        snprintf(key, sizeof(key), "lfo%d_target_param", i + 1);
+        if (json_get_string(json, key, text, sizeof(text))) {
+            set_lane_param(lane, "target_param", text);
+        }
+    }
+}
+
+static int build_state_json(param_lfo_instance_t *inst, char *buf, int buf_len) {
+    int off = 0;
+
+    if (!inst || !buf || buf_len < 4) return -1;
+    if (appendf(buf, buf_len, &off, "{") < 0) return -1;
+
+    for (int i = 0; i < PARAM_LFO_COUNT; i++) {
+        const param_lfo_lane_t *lane = &inst->lanes[i];
+        const int idx = i + 1;
+
+        if (appendf(buf, buf_len, &off,
+                    "%s\"lfo%d_waveform\":\"%s\",\"lfo%d_rate_hz\":%.6f,\"lfo%d_phase\":%.6f,\"lfo%d_depth\":%.6f,\"lfo%d_offset\":%.6f,\"lfo%d_polarity\":\"%s\",\"lfo%d_retrigger\":\"%s\",\"lfo%d_enable\":\"%s\",\"lfo%d_target_component\":\"%s\",\"lfo%d_target_param\":\"%s\"",
+                    (i == 0) ? "" : ",",
+                    idx, waveform_to_string(lane->waveform),
+                    idx, lane->rate_hz,
+                    idx, lane->phase_offset,
+                    idx, lane->depth,
+                    idx, lane->offset,
+                    idx, bipolar_to_string(lane->bipolar),
+                    idx, lane->retrigger ? "on" : "off",
+                    idx, lane->enabled ? "on" : "off",
+                    idx, lane->target_component,
+                    idx, lane->target_param) < 0) {
+            return -1;
+        }
+    }
+
+    if (appendf(buf, buf_len, &off, "}") < 0) return -1;
+    return off;
+}
+
+static int build_chain_params_json(char *buf, int buf_len) {
+    int off = 0;
+    int first = 1;
+
+    if (!buf || buf_len < 4) return -1;
+    if (appendf(buf, buf_len, &off, "[") < 0) return -1;
+
+    for (int i = 0; i < PARAM_LFO_COUNT; i++) {
+        int idx = i + 1;
+
+#define ADD_PARAM(fmt, ...) \
+        do { \
+            if (appendf(buf, buf_len, &off, "%s" fmt, first ? "" : ",", __VA_ARGS__) < 0) return -1; \
+            first = 0; \
+        } while (0)
+
+        ADD_PARAM("{\"key\":\"lfo%d_waveform\",\"name\":\"LFO %d Wave\",\"type\":\"enum\",\"options\":[\"sine\",\"triangle\",\"square\",\"saw_up\",\"random\",\"drunk\"],\"default\":0}", idx, idx);
+        ADD_PARAM("{\"key\":\"lfo%d_rate_hz\",\"name\":\"LFO %d Rate\",\"type\":\"float\",\"min\":0.01,\"max\":20.0,\"default\":1.0,\"step\":0.01}", idx, idx);
+        ADD_PARAM("{\"key\":\"lfo%d_phase\",\"name\":\"LFO %d Phase\",\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.0,\"step\":0.01}", idx, idx);
+        ADD_PARAM("{\"key\":\"lfo%d_depth\",\"name\":\"LFO %d Depth\",\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.25,\"step\":0.01}", idx, idx);
+        ADD_PARAM("{\"key\":\"lfo%d_offset\",\"name\":\"LFO %d Offset\",\"type\":\"float\",\"min\":-1.0,\"max\":1.0,\"default\":0.0,\"step\":0.01}", idx, idx);
+        ADD_PARAM("{\"key\":\"lfo%d_polarity\",\"name\":\"LFO %d Polarity\",\"type\":\"enum\",\"options\":[\"bipolar\",\"unipolar\"],\"default\":0}", idx, idx);
+        ADD_PARAM("{\"key\":\"lfo%d_retrigger\",\"name\":\"LFO %d Retrigger\",\"type\":\"enum\",\"options\":[\"off\",\"on\"],\"default\":0}", idx, idx);
+        ADD_PARAM("{\"key\":\"lfo%d_enable\",\"name\":\"LFO %d Enable\",\"type\":\"enum\",\"options\":[\"off\",\"on\"],\"default\":0}", idx, idx);
+        ADD_PARAM("{\"key\":\"lfo%d_target_component\",\"name\":\"LFO %d Target Comp\",\"type\":\"enum\",\"options\":[\"synth\",\"fx1\",\"fx2\",\"midi_fx1\",\"midi_fx2\"],\"default\":0}", idx, idx);
+        ADD_PARAM("{\"key\":\"lfo%d_target_param\",\"name\":\"LFO %d Target Param\",\"type\":\"filepath\",\"default\":\"\"}", idx, idx);
+
+#undef ADD_PARAM
+    }
+
+    if (appendf(buf, buf_len, &off, "]") < 0) return -1;
+    return off;
+}
+
 static void* param_lfo_create_instance(const char *module_dir, const char *config_json) {
     (void)module_dir;
     (void)config_json;
@@ -264,21 +545,9 @@ static void* param_lfo_create_instance(const char *module_dir, const char *confi
     param_lfo_instance_t *inst = calloc(1, sizeof(param_lfo_instance_t));
     if (!inst) return NULL;
 
-    inst->waveform = WAVE_SINE;
-    inst->phase = 0.0f;
-    inst->phase_offset = 0.0f;
-    inst->rate_hz = 1.0f;
-    inst->depth = 0.25f;
-    inst->offset = 0.0f;
-    inst->bipolar = 1;
-    inst->enabled = 0;
-    inst->retrigger = 0;
-    inst->random_hold_value = rand_bipolar();
-    inst->drunk_start_value = 0.0f;
-    inst->drunk_target_value = rand_bipolar();
-    inst->target_component[0] = '\0';
-    inst->target_param[0] = '\0';
-    snprintf(inst->source_id, sizeof(inst->source_id), "param_lfo_%p", (void *)inst);
+    for (int i = 0; i < PARAM_LFO_COUNT; i++) {
+        init_lane(&inst->lanes[i], inst, i);
+    }
 
     return inst;
 }
@@ -287,7 +556,9 @@ static void param_lfo_destroy_instance(void *instance) {
     param_lfo_instance_t *inst = (param_lfo_instance_t *)instance;
     if (!inst) return;
 
-    clear_modulation(inst);
+    for (int i = 0; i < PARAM_LFO_COUNT; i++) {
+        clear_modulation(&inst->lanes[i]);
+    }
     free(inst);
 }
 
@@ -305,7 +576,7 @@ static int param_lfo_process_midi(void *instance,
 
         /* Transport Start/Stop reset phase for deterministic sync restarts. */
         if (status == 0xFA || status == 0xFC) {
-            reset_phase(inst);
+            reset_all_phases(inst);
             if (status == 0xFC) {
                 clear_held_notes(inst);
             }
@@ -341,35 +612,39 @@ static int param_lfo_tick(void *instance,
 
     if (!g_host || !g_host->mod_emit_value) return 0;
 
-    if (!inst->enabled || !target_component_valid(inst->target_component) || !inst->target_param[0]) {
-        if (inst->modulation_active) {
-            clear_modulation(inst);
+    for (int i = 0; i < PARAM_LFO_COUNT; i++) {
+        param_lfo_lane_t *lane = &inst->lanes[i];
+
+        if (!lane->enabled || !target_component_valid(lane->target_component) || !lane->target_param[0]) {
+            if (lane->modulation_active) {
+                clear_modulation(lane);
+            }
+            continue;
         }
-        return 0;
-    }
 
-    float sample = compute_lfo_sample(inst);
+        float sample = compute_lfo_sample(lane);
 
-    float phase_inc = (inst->rate_hz * waveform_rate_multiplier(inst)) *
-                      ((float)frames / (float)sample_rate);
-    float new_phase = inst->phase + phase_inc;
-    int wraps = (int)floorf(new_phase);
-    inst->phase = wrap_phase(new_phase);
-    for (int i = 0; i < wraps; i++) {
-        advance_wave_cycle_state(inst);
-    }
+        float phase_inc = (lane->rate_hz * waveform_rate_multiplier(lane)) *
+                          ((float)frames / (float)sample_rate);
+        float new_phase = lane->phase + phase_inc;
+        int wraps = (int)floorf(new_phase);
+        lane->phase = wrap_phase(new_phase);
+        for (int w = 0; w < wraps; w++) {
+            advance_wave_cycle_state(lane);
+        }
 
-    int rc = g_host->mod_emit_value(g_host->mod_host_ctx,
-                                    inst->source_id,
-                                    inst->target_component,
-                                    inst->target_param,
-                                    sample,
-                                    inst->depth,
-                                    inst->offset,
-                                    inst->bipolar,
-                                    1);
-    if (rc == 0) {
-        inst->modulation_active = 1;
+        int rc = g_host->mod_emit_value(g_host->mod_host_ctx,
+                                        lane->source_id,
+                                        lane->target_component,
+                                        lane->target_param,
+                                        sample,
+                                        lane->depth,
+                                        lane->offset,
+                                        lane->bipolar,
+                                        1);
+        if (rc == 0) {
+            lane->modulation_active = 1;
+        }
     }
 
     return 0;
@@ -379,163 +654,37 @@ static void param_lfo_set_param(void *instance, const char *key, const char *val
     param_lfo_instance_t *inst = (param_lfo_instance_t *)instance;
     if (!inst || !key || !val) return;
 
-    if (strcmp(key, "waveform") == 0) {
-        inst->waveform = parse_waveform(val, inst->waveform);
+    if (strcmp(key, "state") == 0) {
+        apply_state_json(inst, val);
+        return;
     }
-    else if (strcmp(key, "rate_hz") == 0) {
-        inst->rate_hz = clampf((float)atof(val), 0.01f, 20.0f);
-    }
-    else if (strcmp(key, "phase") == 0) {
-        inst->phase_offset = clampf((float)atof(val), 0.0f, 1.0f);
-    }
-    else if (strcmp(key, "depth") == 0) {
-        inst->depth = clampf((float)atof(val), 0.0f, 1.0f);
-    }
-    else if (strcmp(key, "offset") == 0) {
-        inst->offset = clampf((float)atof(val), -1.0f, 1.0f);
-    }
-    else if (strcmp(key, "polarity") == 0) {
-        inst->bipolar = parse_bipolar(val, inst->bipolar);
-    }
-    else if (strcmp(key, "retrigger") == 0) {
-        inst->retrigger = parse_toggle(val, inst->retrigger);
-    }
-    else if (strcmp(key, "enable") == 0) {
-        int new_enabled = parse_toggle(val, inst->enabled);
-        if (!new_enabled && inst->modulation_active) {
-            clear_modulation(inst);
-        }
-        inst->enabled = new_enabled;
-    }
-    else if (strcmp(key, "target_component") == 0) {
-        if (inst->modulation_active) {
-            clear_modulation(inst);
-        }
-        strncpy(inst->target_component, val, sizeof(inst->target_component) - 1);
-        inst->target_component[sizeof(inst->target_component) - 1] = '\0';
-    }
-    else if (strcmp(key, "target_param") == 0) {
-        if (inst->modulation_active) {
-            clear_modulation(inst);
-        }
-        strncpy(inst->target_param, val, sizeof(inst->target_param) - 1);
-        inst->target_param[sizeof(inst->target_param) - 1] = '\0';
-    }
-    else if (strcmp(key, "state") == 0) {
-        float f = 0.0f;
-        char text[64];
 
-        if (json_get_string(val, "waveform", text, sizeof(text))) {
-            inst->waveform = parse_waveform(text, inst->waveform);
-        }
-        if (json_get_float(val, "rate_hz", &f)) {
-            inst->rate_hz = clampf(f, 0.01f, 20.0f);
-        }
-        if (json_get_float(val, "phase", &f)) {
-            inst->phase_offset = clampf(f, 0.0f, 1.0f);
-        }
-        if (json_get_float(val, "depth", &f)) {
-            inst->depth = clampf(f, 0.0f, 1.0f);
-        }
-        if (json_get_float(val, "offset", &f)) {
-            inst->offset = clampf(f, -1.0f, 1.0f);
-        }
-        if (json_get_string(val, "polarity", text, sizeof(text))) {
-            inst->bipolar = parse_bipolar(text, inst->bipolar);
-        }
-        if (json_get_string(val, "retrigger", text, sizeof(text))) {
-            inst->retrigger = parse_toggle(text, inst->retrigger);
-        }
-        if (json_get_string(val, "enable", text, sizeof(text))) {
-            int new_enabled = parse_toggle(text, inst->enabled);
-            if (!new_enabled && inst->modulation_active) {
-                clear_modulation(inst);
-            }
-            inst->enabled = new_enabled;
-        }
-        if (json_get_string(val, "target_component", text, sizeof(text))) {
-            if (inst->modulation_active) {
-                clear_modulation(inst);
-            }
-            strncpy(inst->target_component, text, sizeof(inst->target_component) - 1);
-            inst->target_component[sizeof(inst->target_component) - 1] = '\0';
-        }
-        if (json_get_string(val, "target_param", text, sizeof(text))) {
-            if (inst->modulation_active) {
-                clear_modulation(inst);
-            }
-            strncpy(inst->target_param, text, sizeof(inst->target_param) - 1);
-            inst->target_param[sizeof(inst->target_param) - 1] = '\0';
-        }
-    }
+    int lane_idx = -1;
+    const char *subkey = NULL;
+    if (!parse_lfo_key(key, &lane_idx, &subkey)) return;
+    if (lane_idx < 0 || lane_idx >= PARAM_LFO_COUNT) return;
+
+    set_lane_param(&inst->lanes[lane_idx], subkey, val);
 }
 
 static int param_lfo_get_param(void *instance, const char *key, char *buf, int buf_len) {
     param_lfo_instance_t *inst = (param_lfo_instance_t *)instance;
     if (!inst || !key || !buf || buf_len < 1) return -1;
 
-    if (strcmp(key, "waveform") == 0) {
-        return snprintf(buf, buf_len, "%s", waveform_to_string(inst->waveform));
-    }
-    if (strcmp(key, "rate_hz") == 0) {
-        return snprintf(buf, buf_len, "%.4f", inst->rate_hz);
-    }
-    if (strcmp(key, "phase") == 0) {
-        return snprintf(buf, buf_len, "%.4f", inst->phase_offset);
-    }
-    if (strcmp(key, "depth") == 0) {
-        return snprintf(buf, buf_len, "%.4f", inst->depth);
-    }
-    if (strcmp(key, "offset") == 0) {
-        return snprintf(buf, buf_len, "%.4f", inst->offset);
-    }
-    if (strcmp(key, "polarity") == 0) {
-        return snprintf(buf, buf_len, "%s", bipolar_to_string(inst->bipolar));
-    }
-    if (strcmp(key, "retrigger") == 0) {
-        return snprintf(buf, buf_len, "%s", inst->retrigger ? "on" : "off");
-    }
-    if (strcmp(key, "enable") == 0) {
-        return snprintf(buf, buf_len, "%s", inst->enabled ? "on" : "off");
-    }
-    if (strcmp(key, "target_component") == 0) {
-        return snprintf(buf, buf_len, "%s", inst->target_component);
-    }
-    if (strcmp(key, "target_param") == 0) {
-        return snprintf(buf, buf_len, "%s", inst->target_param);
-    }
     if (strcmp(key, "state") == 0) {
-        return snprintf(buf,
-                        buf_len,
-                        "{\"waveform\":\"%s\",\"rate_hz\":%.6f,\"phase\":%.6f,\"depth\":%.6f,\"offset\":%.6f,\"polarity\":\"%s\",\"retrigger\":\"%s\",\"enable\":\"%s\",\"target_component\":\"%s\",\"target_param\":\"%s\"}",
-                        waveform_to_string(inst->waveform),
-                        inst->rate_hz,
-                        inst->phase_offset,
-                        inst->depth,
-                        inst->offset,
-                        bipolar_to_string(inst->bipolar),
-                        inst->retrigger ? "on" : "off",
-                        inst->enabled ? "on" : "off",
-                        inst->target_component,
-                        inst->target_param);
-    }
-    if (strcmp(key, "chain_params") == 0) {
-        const char *params = "["
-            "{\"key\":\"waveform\",\"name\":\"Wave\",\"type\":\"enum\",\"options\":[\"sine\",\"triangle\",\"square\",\"saw_up\",\"random\",\"drunk\"],\"default\":0},"
-            "{\"key\":\"rate_hz\",\"name\":\"Rate\",\"type\":\"float\",\"min\":0.01,\"max\":20.0,\"default\":1.0,\"step\":0.01},"
-            "{\"key\":\"phase\",\"name\":\"Phase\",\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.0,\"step\":0.01},"
-            "{\"key\":\"depth\",\"name\":\"Depth\",\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.25,\"step\":0.01},"
-            "{\"key\":\"offset\",\"name\":\"Offset\",\"type\":\"float\",\"min\":-1.0,\"max\":1.0,\"default\":0.0,\"step\":0.01},"
-            "{\"key\":\"polarity\",\"name\":\"Polarity\",\"type\":\"enum\",\"options\":[\"bipolar\",\"unipolar\"],\"default\":0},"
-            "{\"key\":\"retrigger\",\"name\":\"Retrigger\",\"type\":\"enum\",\"options\":[\"off\",\"on\"],\"default\":0},"
-            "{\"key\":\"enable\",\"name\":\"Enable\",\"type\":\"enum\",\"options\":[\"off\",\"on\"],\"default\":0},"
-            "{\"key\":\"target_component\",\"name\":\"Target Comp\",\"type\":\"enum\",\"options\":[\"synth\",\"fx1\",\"fx2\",\"midi_fx1\",\"midi_fx2\"],\"default\":0},"
-            "{\"key\":\"target_param\",\"name\":\"Target Param\",\"type\":\"filepath\",\"default\":\"\"}"
-        "]";
-        return snprintf(buf, buf_len, "%s", params);
+        return build_state_json(inst, buf, buf_len);
     }
 
-    return -1;
+    if (strcmp(key, "chain_params") == 0) {
+        return build_chain_params_json(buf, buf_len);
+    }
+
+    int lane_idx = -1;
+    const char *subkey = NULL;
+    if (!parse_lfo_key(key, &lane_idx, &subkey)) return -1;
+    if (lane_idx < 0 || lane_idx >= PARAM_LFO_COUNT) return -1;
+
+    return get_lane_param(&inst->lanes[lane_idx], subkey, buf, buf_len);
 }
 
 static midi_fx_api_v1_t g_api = {

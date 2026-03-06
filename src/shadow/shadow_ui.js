@@ -640,6 +640,8 @@ let knobParamPickerPath = [];        // Navigation path for back in hierarchy
 let paramLfoPickerSlot = -1;
 let paramLfoPickerComponent = "";
 let paramLfoPickerStartKey = "";    // "target_component" or "target_param"
+let paramLfoPickerTargetComponentKey = "";
+let paramLfoPickerTargetParamKey = "";
 let paramLfoPickerMode = "target";  // target -> choose component, param -> choose numeric param
 let paramLfoPickerTarget = "";
 let paramLfoPickerIndex = 0;
@@ -5007,8 +5009,45 @@ function getKnobParamsForTarget(slot, target) {
     return params;
 }
 
+function getParamLfoTargetFieldConfig(key) {
+    if (key === "target_component") {
+        return {
+            selectedKind: "target_component",
+            targetComponentKey: "target_component",
+            targetParamKey: "target_param"
+        };
+    }
+    if (key === "target_param") {
+        return {
+            selectedKind: "target_param",
+            targetComponentKey: "target_component",
+            targetParamKey: "target_param"
+        };
+    }
+    if (typeof key !== "string") return null;
+    if (key.endsWith("_target_component")) {
+        const stem = key.slice(0, -"_target_component".length);
+        if (!stem) return null;
+        return {
+            selectedKind: "target_component",
+            targetComponentKey: `${stem}_target_component`,
+            targetParamKey: `${stem}_target_param`
+        };
+    }
+    if (key.endsWith("_target_param")) {
+        const stem = key.slice(0, -"_target_param".length);
+        if (!stem) return null;
+        return {
+            selectedKind: "target_param",
+            targetComponentKey: `${stem}_target_component`,
+            targetParamKey: `${stem}_target_param`
+        };
+    }
+    return null;
+}
+
 function isParamLfoHierarchyTargetField(key) {
-    if (key !== "target_component" && key !== "target_param") return false;
+    if (!getParamLfoTargetFieldConfig(key)) return false;
     if (hierEditorSlot < 0 || !hierEditorComponent || hierEditorIsMasterFx) return false;
 
     const cfg = chainConfigs[hierEditorSlot];
@@ -5021,6 +5060,8 @@ function resetParamLfoTargetPickerState() {
     paramLfoPickerSlot = -1;
     paramLfoPickerComponent = "";
     paramLfoPickerStartKey = "";
+    paramLfoPickerTargetComponentKey = "";
+    paramLfoPickerTargetParamKey = "";
     paramLfoPickerMode = "target";
     paramLfoPickerTarget = "";
     paramLfoPickerIndex = 0;
@@ -5120,23 +5161,27 @@ function getNumericParamsForTarget(slot, target) {
 
 function enterParamLfoTargetPicker(key) {
     if (!isParamLfoHierarchyTargetField(key)) return false;
+    const keyCfg = getParamLfoTargetFieldConfig(key);
+    if (!keyCfg) return false;
 
     resetParamLfoTargetPickerState();
     paramLfoPickerSlot = hierEditorSlot;
     paramLfoPickerComponent = hierEditorComponent;
-    paramLfoPickerStartKey = key;
+    paramLfoPickerStartKey = keyCfg.selectedKind;
+    paramLfoPickerTargetComponentKey = keyCfg.targetComponentKey;
+    paramLfoPickerTargetParamKey = keyCfg.targetParamKey;
     paramLfoPickerTargets = getParamLfoPickerTargets(hierEditorSlot, hierEditorComponent);
 
     const prefix = getComponentParamPrefix(hierEditorComponent);
-    const currentTarget = getSlotParam(hierEditorSlot, `${prefix}:target_component`) || "";
-    const currentParam = getSlotParam(hierEditorSlot, `${prefix}:target_param`) || "";
+    const currentTarget = getSlotParam(hierEditorSlot, `${prefix}:${paramLfoPickerTargetComponentKey}`) || "";
+    const currentParam = getSlotParam(hierEditorSlot, `${prefix}:${paramLfoPickerTargetParamKey}`) || "";
 
     const targetIdx = paramLfoPickerTargets.findIndex(t => t.id === currentTarget);
     if (targetIdx >= 0) {
         paramLfoPickerIndex = targetIdx;
     }
 
-    if (key === "target_param" && currentTarget) {
+    if (keyCfg.selectedKind === "target_param" && currentTarget) {
         const numericParams = getNumericParamsForTarget(hierEditorSlot, currentTarget);
         if (numericParams.length > 0) {
             paramLfoPickerMode = "param";
@@ -5149,7 +5194,7 @@ function enterParamLfoTargetPicker(key) {
 
     setView(VIEWS.PARAM_LFO_TARGET_PICKER);
     needsRedraw = true;
-    announce(key === "target_component" ? "LFO target component" : "LFO target parameter");
+    announce(keyCfg.selectedKind === "target_component" ? "LFO target component" : "LFO target parameter");
     return true;
 }
 
@@ -5179,16 +5224,16 @@ function handleParamLfoTargetPickerSelect() {
         if (!selectedTarget) return;
 
         if (!selectedTarget.id) {
-            setSlotParam(paramLfoPickerSlot, `${prefix}:target_component`, "");
-            setSlotParam(paramLfoPickerSlot, `${prefix}:target_param`, "");
+            setSlotParam(paramLfoPickerSlot, `${prefix}:${paramLfoPickerTargetComponentKey}`, "");
+            setSlotParam(paramLfoPickerSlot, `${prefix}:${paramLfoPickerTargetParamKey}`, "");
             closeParamLfoTargetPicker("LFO target cleared");
             return;
         }
 
-        setSlotParam(paramLfoPickerSlot, `${prefix}:target_component`, selectedTarget.id);
+        setSlotParam(paramLfoPickerSlot, `${prefix}:${paramLfoPickerTargetComponentKey}`, selectedTarget.id);
 
         if (paramLfoPickerStartKey === "target_component") {
-            setSlotParam(paramLfoPickerSlot, `${prefix}:target_param`, "");
+            setSlotParam(paramLfoPickerSlot, `${prefix}:${paramLfoPickerTargetParamKey}`, "");
             closeParamLfoTargetPicker(`Target component ${selectedTarget.id}`);
             return;
         }
@@ -5199,7 +5244,7 @@ function handleParamLfoTargetPickerSelect() {
         paramLfoPickerIndex = 0;
 
         if (paramLfoPickerParams.length === 0) {
-            setSlotParam(paramLfoPickerSlot, `${prefix}:target_param`, "");
+            setSlotParam(paramLfoPickerSlot, `${prefix}:${paramLfoPickerTargetParamKey}`, "");
             closeParamLfoTargetPicker("No numeric params");
         } else {
             const first = paramLfoPickerParams[0];
@@ -5211,8 +5256,8 @@ function handleParamLfoTargetPickerSelect() {
     const selectedParam = paramLfoPickerParams[paramLfoPickerIndex];
     if (!selectedParam) return;
 
-    setSlotParam(paramLfoPickerSlot, `${prefix}:target_component`, paramLfoPickerTarget);
-    setSlotParam(paramLfoPickerSlot, `${prefix}:target_param`, selectedParam.key || "");
+    setSlotParam(paramLfoPickerSlot, `${prefix}:${paramLfoPickerTargetComponentKey}`, paramLfoPickerTarget);
+    setSlotParam(paramLfoPickerSlot, `${prefix}:${paramLfoPickerTargetParamKey}`, selectedParam.key || "");
     closeParamLfoTargetPicker(`Target ${paramLfoPickerTarget}:${selectedParam.key}`);
 }
 
