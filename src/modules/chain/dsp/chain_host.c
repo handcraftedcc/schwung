@@ -631,6 +631,16 @@ static float dsp_value_to_float(const char *val_str, chain_param_info_t *pinfo, 
 static void v2_chain_log(chain_instance_t *inst, const char *msg);  /* Forward declaration */
 static void parse_debug_log(const char *msg);  /* Forward declaration */
 static void chain_update_clock_runtime(const uint8_t *msg, int len);
+static int chain_mod_emit_value(void *ctx,
+                                const char *source_id,
+                                const char *target,
+                                const char *param,
+                                float signal,
+                                float depth,
+                                float offset,
+                                int bipolar,
+                                int enabled);
+static void chain_mod_clear_source(void *ctx, const char *source_id);
 
 /* Plugin API we return to host */
 static plugin_api_v1_t g_plugin_api;
@@ -3913,6 +3923,12 @@ plugin_api_v1_t* move_plugin_init_v1(const host_api_v1_t *host) {
     g_source_host_api.midi_send_external = midi_source_send;
     g_subplugin_host_api.get_clock_status = chain_get_clock_status;
     g_source_host_api.get_clock_status = chain_get_clock_status;
+    g_subplugin_host_api.mod_emit_value = chain_mod_emit_value;
+    g_subplugin_host_api.mod_clear_source = chain_mod_clear_source;
+    g_subplugin_host_api.mod_host_ctx = NULL;
+    g_source_host_api.mod_emit_value = chain_mod_emit_value;
+    g_source_host_api.mod_clear_source = chain_mod_clear_source;
+    g_source_host_api.mod_host_ctx = NULL;
 
     /* Initialize our plugin API struct */
     memset(&g_plugin_api, 0, sizeof(g_plugin_api));
@@ -3942,6 +3958,34 @@ static void v2_chain_log(chain_instance_t *inst, const char *msg) {
         snprintf(buf, sizeof(buf), "[chain-v2] %s", msg);
         inst->host->log(buf);
     }
+}
+
+/* Placeholder modulation callbacks.
+ * Full runtime behavior is implemented by follow-up tasks. */
+static int chain_mod_emit_value(void *ctx,
+                                const char *source_id,
+                                const char *target,
+                                const char *param,
+                                float signal,
+                                float depth,
+                                float offset,
+                                int bipolar,
+                                int enabled) {
+    (void)ctx;
+    (void)source_id;
+    (void)target;
+    (void)param;
+    (void)signal;
+    (void)depth;
+    (void)offset;
+    (void)bipolar;
+    (void)enabled;
+    return -1;
+}
+
+static void chain_mod_clear_source(void *ctx, const char *source_id) {
+    (void)ctx;
+    (void)source_id;
 }
 
 /* Forward declarations for v2 helper functions */
@@ -3976,6 +4020,12 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
         memcpy(&inst->source_host_api, g_host, sizeof(host_api_v1_t));
         inst->subplugin_host_api.get_clock_status = chain_get_clock_status;
         inst->source_host_api.get_clock_status = chain_get_clock_status;
+        inst->subplugin_host_api.mod_emit_value = chain_mod_emit_value;
+        inst->subplugin_host_api.mod_clear_source = chain_mod_clear_source;
+        inst->subplugin_host_api.mod_host_ctx = inst;
+        inst->source_host_api.mod_emit_value = chain_mod_emit_value;
+        inst->source_host_api.mod_clear_source = chain_mod_clear_source;
+        inst->source_host_api.mod_host_ctx = inst;
         /* Note: MIDI source routing would need instance-specific handling for full v2 */
     }
 
