@@ -129,6 +129,7 @@ mkdir -p ./build/lib/
 mkdir -p ./build/licenses/
 mkdir -p ./build/modules/chain/
 mkdir -p ./build/modules/audio_fx/freeverb/
+mkdir -p ./build/modules/audio_fx/param_lfo_fx/
 mkdir -p ./build/modules/midi_fx/chord/
 mkdir -p ./build/modules/midi_fx/arp/
 mkdir -p ./build/modules/midi_fx/velocity_scale/
@@ -419,6 +420,19 @@ if needs_rebuild build/modules/audio_fx/freeverb/freeverb.so \
         -lm
 else
     echo "Skipping freeverb (up to date)"
+fi
+
+# Build Param LFO Audio FX (passthrough modulation source)
+if needs_rebuild build/modules/audio_fx/param_lfo_fx/param_lfo_fx.so \
+    src/modules/audio_fx/param_lfo_fx/param_lfo_fx.c src/host/audio_fx_api_v2.h src/host/plugin_api_v1.h; then
+    echo "Building param_lfo_fx audio FX..."
+    "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+        src/modules/audio_fx/param_lfo_fx/param_lfo_fx.c \
+        -o build/modules/audio_fx/param_lfo_fx/param_lfo_fx.so \
+        -Isrc \
+        -lm
+else
+    echo "Skipping param_lfo_fx audio FX (up to date)"
 fi
 
 echo "Building MIDI FX plugins..."

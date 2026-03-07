@@ -332,6 +332,7 @@ These modules are included with Move Everything:
 - **Chords** - Chord generator with shapes, inversions, voicing, and strum
 - **Arpeggiator** - Pattern-based arpeggiator (up, down, up/down, random)
 - **Velocity Scale** - Scales MIDI velocity to a configurable min/max range
+- **Param LFO** - Three global LFO lanes for temporary modulation of synth/FX/MIDI-FX parameters
 
 **Audio FX:**
 - **Freeverb** - Simple, effective reverb

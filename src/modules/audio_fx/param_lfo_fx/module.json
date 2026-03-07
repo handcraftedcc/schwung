@@ -1,12 +1,15 @@
 {
-  "id": "param_lfo",
+  "id": "param_lfo_fx",
   "name": "Param LFO",
   "abbrev": "LF",
   "version": "0.2.0",
+  "dsp": "param_lfo_fx.so",
+  "api_version": 1,
+  "component_type": "audio_fx",
   "builtin": true,
   "capabilities": {
     "chainable": true,
-    "component_type": "midi_fx",
+    "component_type": "audio_fx",
     "ui_hierarchy": {
       "levels": {
         "root": {

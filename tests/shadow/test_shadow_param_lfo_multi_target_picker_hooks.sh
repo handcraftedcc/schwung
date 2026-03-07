@@ -3,21 +3,41 @@ set -euo pipefail
 
 file="src/shadow/shadow_ui.js"
 
-if ! rg -q 'endsWith\("_target_component"\)' "$file"; then
-  echo "FAIL: param_lfo picker does not recognize suffixed target_component keys" >&2
+if ! rg -q 'function inferLinkedTargetComponentKey' "$file"; then
+  echo "FAIL: missing generic linked target_key resolver" >&2
+  exit 1
+fi
+if ! rg -q 'function inferLinkedTargetParamKey' "$file"; then
+  echo "FAIL: missing generic linked param_key resolver" >&2
   exit 1
 fi
 if ! rg -q 'endsWith\("_target_param"\)' "$file"; then
-  echo "FAIL: param_lfo picker does not recognize suffixed target_param keys" >&2
+  echo "FAIL: linked target resolver does not recognize suffixed _target_param keys" >&2
   exit 1
 fi
-if ! rg -q 'paramLfoPickerTargetComponentKey' "$file"; then
-  echo "FAIL: picker is missing dynamic target_component key tracking" >&2
+if ! rg -q 'endsWith\("_target_component"\)' "$file"; then
+  echo "FAIL: linked param resolver does not recognize suffixed _target_component keys" >&2
   exit 1
 fi
-if ! rg -q 'paramLfoPickerTargetParamKey' "$file"; then
-  echo "FAIL: picker is missing dynamic target_param key tracking" >&2
+if ! rg -q 'paramKey === "target_param"' "$file"; then
+  echo "FAIL: linked target resolver does not handle base target_param key" >&2
+  exit 1
+fi
+if ! rg -q 'componentKey === "target_component"' "$file"; then
+  echo "FAIL: linked param resolver does not handle base target_component key" >&2
+  exit 1
+fi
+if ! rg -q 'meta.target_key' "$file"; then
+  echo "FAIL: linked target resolver does not support explicit target_key metadata" >&2
+  exit 1
+fi
+if ! rg -q 'meta.param_key' "$file"; then
+  echo "FAIL: linked param resolver does not support explicit param_key metadata" >&2
+  exit 1
+fi
+if ! rg -q 'numeric_only' "$file"; then
+  echo "FAIL: parameter picker is missing numeric_only metadata support" >&2
   exit 1
 fi
 
-echo "PASS: shadow param_lfo picker supports multi-LFO suffixed target keys"
+echo "PASS: shadow dynamic picker link resolution supports suffixed target key pairs"

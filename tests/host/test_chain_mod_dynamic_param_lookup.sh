@@ -19,7 +19,7 @@ if ! rg -q 'static void chain_mod_clear_target_entry\(' "$file"; then
   echo "FAIL: missing targeted modulation clear helper for stale mappings" >&2
   exit 1
 fi
-if ! rg -Fq 'if (!pinfo) {' "$file" || ! rg -q 'chain_mod_clear_target_entry\(inst, stale\);' "$file"; then
+if ! rg -Fq 'if (!pinfo) {' "$file" || ! rg -q 'chain_mod_clear_target_entry\(inst, stale, 0\);' "$file"; then
   echo "FAIL: missing stale-target cleanup when modulation metadata lookup fails" >&2
   exit 1
 fi

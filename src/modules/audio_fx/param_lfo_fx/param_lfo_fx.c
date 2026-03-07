@@ -1,8 +1,8 @@
 /*
- * Param LFO MIDI FX
+ * Param LFO Audio FX
  *
- * Publishes control-rate modulation values into chain host's runtime
- * modulation bus without overwriting target base values.
+ * Audio passthrough effect that publishes control-rate modulation values into
+ * chain host's runtime modulation bus without overwriting target base values.
  */
 
 #include <stdlib.h>
@@ -11,7 +11,7 @@
 #include <stdarg.h>
 #include <math.h>
 
-#include "host/midi_fx_api_v1.h"
+#include "host/audio_fx_api_v2.h"
 #include "host/plugin_api_v1.h"
 
 #ifndef M_PI
@@ -674,42 +674,27 @@ static int param_lfo_get_param(void *instance, const char *key, char *buf, int b
 
 /* === PARAM_LFO_SHARED_END === */
 
-static int param_lfo_process_midi(void *instance,
-                                  const uint8_t *in_msg, int in_len,
-                                  uint8_t out_msgs[][3], int out_lens[],
-                                  int max_out) {
-    if (!in_msg || in_len < 1 || max_out < 1) return 0;
-    param_lfo_handle_midi(instance, in_msg, in_len);
-
-    out_msgs[0][0] = in_msg[0];
-    out_msgs[0][1] = in_len > 1 ? in_msg[1] : 0;
-    out_msgs[0][2] = in_len > 2 ? in_msg[2] : 0;
-    out_lens[0] = in_len;
-    return 1;
+static void param_lfo_process_block(void *instance, int16_t *audio_inout, int frames) {
+    (void)audio_inout;  /* passthrough effect: modulation only */
+    param_lfo_step(instance, frames, 44100);
 }
 
-static int param_lfo_tick(void *instance,
-                          int frames, int sample_rate,
-                          uint8_t out_msgs[][3], int out_lens[],
-                          int max_out) {
-    (void)out_msgs;
-    (void)out_lens;
-    (void)max_out;
-    param_lfo_step(instance, frames, sample_rate);
-    return 0;
+static void param_lfo_on_midi(void *instance, const uint8_t *msg, int len, int source) {
+    (void)source;
+    param_lfo_handle_midi(instance, msg, len);
 }
 
-static midi_fx_api_v1_t g_api = {
-    .api_version = MIDI_FX_API_VERSION,
+static audio_fx_api_v2_t g_api = {
+    .api_version = AUDIO_FX_API_VERSION_2,
     .create_instance = param_lfo_create_instance,
     .destroy_instance = param_lfo_destroy_instance,
-    .process_midi = param_lfo_process_midi,
-    .tick = param_lfo_tick,
+    .process_block = param_lfo_process_block,
     .set_param = param_lfo_set_param,
-    .get_param = param_lfo_get_param
+    .get_param = param_lfo_get_param,
+    .on_midi = param_lfo_on_midi
 };
 
-midi_fx_api_v1_t* move_midi_fx_init(const host_api_v1_t *host) {
+audio_fx_api_v2_t* move_audio_fx_init_v2(const host_api_v1_t *host) {
     g_host = host;
     return &g_api;
 }

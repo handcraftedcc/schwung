@@ -156,6 +156,22 @@ typedef struct plugin_api_v2 {
 extern "C" plugin_api_v2_t* move_plugin_init_v2(const host_api_v1_t *host);
 ```
 
+`host_api_v1_t` also exposes optional runtime modulation callbacks when running inside Chain:
+
+```c
+int (*mod_emit_value)(void *ctx,
+                      const char *source_id,
+                      const char *target,
+                      const char *param,
+                      float signal,
+                      float depth,
+                      float offset,
+                      int bipolar,
+                      int enabled);
+void (*mod_clear_source)(void *ctx, const char *source_id);
+void *mod_host_ctx;
+```
+
 ### Plugin API v1 (Deprecated)
 
 V1 is a singleton API - only one instance can exist. Do not use for new modules:
@@ -378,7 +394,7 @@ if (strcmp(key, "chain_params") == 0) {
 }
 ```
 
-Parameter types: `float` (with `min`, `max`, `step`), `int` (with `min`, `max`), `enum` (with `options` array).
+Parameter types: `float` (with `min`, `max`, `step`), `int` (with `min`, `max`), `enum` (with `options` array), `filepath`, `module_picker`, `parameter_picker`.
 Optional fields: `default`, `unit`, `display_format`.
 
 These provide metadata for the Shadow UI parameter editor alongside `ui_hierarchy` (which defines menu structure and knob mappings).
@@ -388,7 +404,7 @@ These provide metadata for the Shadow UI parameter editor alongside `ui_hierarch
 - Chain host (`modules/chain/dsp/chain_host.c`) loads sub-plugins via dlopen
 - Forwards MIDI to sound generator, routes audio through effects
 - Patch files stored in `/data/UserData/move-anything/patches/*.json` on device define chain configurations
-- MIDI FX: chord generator, arpeggiator (up, down, up_down, random)
+- MIDI FX: chord generator, arpeggiator (up, down, up_down, random), param_lfo (3-lane parameter modulation)
 - Audio FX: freeverb
 - MIDI sources (optional): DSP modules that generate MIDI; can provide `ui_chain.js` for full-screen chain UI
 

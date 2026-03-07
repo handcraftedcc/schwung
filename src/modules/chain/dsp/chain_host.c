@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <ctype.h>
 #include <dlfcn.h>
 #include <dirent.h>
 #include <time.h>
@@ -150,20 +151,25 @@ typedef struct {
 } chain_param_info_t;
 
 #define MAX_MOD_TARGETS 32
-#define MAX_MOD_SOURCES 8
+#define MAX_MOD_SOURCES_PER_TARGET 8
 #define MOD_PARAM_CACHE_REFRESH_MS 250
 #define MOD_FLOAT_CHANGE_EPSILON 0.000001f
 #define MOD_INT_ENUM_MIN_INTERVAL_MS 50
+
+typedef struct mod_source_contribution {
+    int active;
+    char source_id[32];
+    float contribution;
+} mod_source_contribution_t;
 
 /* Runtime modulation target state (non-destructive overlay). */
 typedef struct mod_target_state {
     int active;
     int enabled;
-    char source_id[32];
     char target[16];
     char param[32];
     float base_value;
-    float contribution;
+    mod_source_contribution_t sources[MAX_MOD_SOURCES_PER_TARGET];
     float effective_value;
     float last_applied_value;
     uint64_t last_applied_ms;
@@ -172,12 +178,6 @@ typedef struct mod_target_state {
     float max_val;
     knob_type_t type;
 } mod_target_state_t;
-
-/* Runtime modulation source state (reserved for future expansion). */
-typedef struct {
-    int active;
-    char source_id[32];
-} mod_source_state_t;
 
 #define MOVE_PAD_NOTE_MAX 99
 
@@ -430,6 +430,7 @@ typedef struct chain_instance {
     int synth_param_count;
     chain_param_info_t fx_params[MAX_AUDIO_FX][MAX_CHAIN_PARAMS];
     int fx_param_counts[MAX_AUDIO_FX];
+    char fx_ui_hierarchy[MAX_AUDIO_FX][8192];  /* Cached ui_hierarchy JSON */
 
     /* Patch state */
     patch_info_t patches[MAX_PATCHES];
@@ -454,8 +455,6 @@ typedef struct chain_instance {
     /* Runtime modulation bus state */
     mod_target_state_t mod_targets[MAX_MOD_TARGETS];
     int mod_target_count;
-    mod_source_state_t mod_sources[MAX_MOD_SOURCES];
-    int mod_source_count;
     uint64_t mod_param_refresh_ms_synth;
     uint64_t mod_param_refresh_ms_fx[MAX_AUDIO_FX];
     uint64_t mod_param_refresh_ms_midi_fx[MAX_MIDI_FX];
@@ -664,6 +663,7 @@ static int chain_get_clock_status(void);
 static int scan_patches(const char *module_dir);
 static void unload_patch(void);
 static int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count);
+static int parse_ui_hierarchy_cache(const char *module_path, char *out, int out_len);
 static int parse_chain_params_array_json(const char *json_array, chain_param_info_t *params, int max_params);
 static chain_param_info_t *find_param_info(chain_param_info_t *params, int count, const char *key);
 static chain_param_info_t *find_param_by_key(chain_instance_t *inst, const char *target, const char *key);
@@ -688,7 +688,8 @@ static void chain_mod_update_base_from_set_param(chain_instance_t *inst,
                                                  const char *param,
                                                  const char *val);
 static void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_state_t *entry, int force_write);
-static void chain_mod_clear_target_entry(chain_instance_t *inst, mod_target_state_t *entry);
+static void chain_mod_clear_target_entry(chain_instance_t *inst, mod_target_state_t *entry, int restore_base);
+static void chain_mod_clear_target_entries(chain_instance_t *inst, const char *target, int restore_base);
 static int chain_mod_get_base_for_subkey(chain_instance_t *inst,
                                          const char *target,
                                          const char *subkey,
@@ -1533,45 +1534,7 @@ static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
         return -1;
     }
 
-    /* Parse ui_hierarchy from module.json */
-    {
-        char json_path[MAX_PATH_LEN];
-        snprintf(json_path, sizeof(json_path), "%s/module.json", fx_dir);
-        FILE *f = fopen(json_path, "r");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long size = ftell(f);
-            fseek(f, 0, SEEK_SET);
-            if (size > 0 && size < 32768) {
-                char *json = malloc(size + 1);
-                if (json) {
-                    { size_t nr = fread(json, 1, size, f); json[nr] = '\0'; }
-                    /* Find ui_hierarchy object */
-                    const char *hier_start = strstr(json, "\"ui_hierarchy\"");
-                    if (hier_start) {
-                        const char *obj_start = strchr(hier_start, '{');
-                        if (obj_start) {
-                            /* Find matching } by counting braces */
-                            int depth = 1;
-                            const char *obj_end = obj_start + 1;
-                            while (*obj_end && depth > 0) {
-                                if (*obj_end == '{') depth++;
-                                else if (*obj_end == '}') depth--;
-                                obj_end++;
-                            }
-                            int len = (int)(obj_end - obj_start);
-                            if (len > 0 && len < 8191) {
-                                strncpy(inst->midi_fx_ui_hierarchy[slot], obj_start, len);
-                                inst->midi_fx_ui_hierarchy[slot][len] = '\0';
-                            }
-                        }
-                    }
-                    free(json);
-                }
-            }
-            fclose(f);
-        }
-    }
+    parse_ui_hierarchy_cache(fx_dir, inst->midi_fx_ui_hierarchy[slot], sizeof(inst->midi_fx_ui_hierarchy[slot]));
 
     inst->midi_fx_count++;
 
@@ -1585,6 +1548,10 @@ static void v2_unload_all_midi_fx(chain_instance_t *inst) {
     if (!inst) return;
 
     for (int i = 0; i < inst->midi_fx_count; i++) {
+        char target[16];
+        snprintf(target, sizeof(target), "midi_fx%d", i + 1);
+        chain_mod_clear_target_entries(inst, target, 0);
+
         if (inst->midi_fx_plugins[i] && inst->midi_fx_instances[i] &&
             inst->midi_fx_plugins[i]->destroy_instance) {
             inst->midi_fx_plugins[i]->destroy_instance(inst->midi_fx_instances[i]);
@@ -2447,6 +2414,59 @@ static int parse_chain_params(const char *module_path, chain_param_info_t *param
 
     free(json);
     return 0;
+}
+
+/* Parse ui_hierarchy object from module.json and cache it as raw JSON. */
+static int parse_ui_hierarchy_cache(const char *module_path, char *out, int out_len) {
+    char json_path[MAX_PATH_LEN];
+    if (!module_path || !out || out_len < 2) return -1;
+
+    out[0] = '\0';
+    snprintf(json_path, sizeof(json_path), "%s/module.json", module_path);
+
+    FILE *f = fopen(json_path, "r");
+    if (!f) return -1;
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0 || size >= 32768) {
+        fclose(f);
+        return -1;
+    }
+
+    char *json = malloc(size + 1);
+    if (!json) {
+        fclose(f);
+        return -1;
+    }
+
+    { size_t nr = fread(json, 1, size, f); json[nr] = '\0'; }
+    fclose(f);
+
+    int rc = -1;
+    const char *hier_start = strstr(json, "\"ui_hierarchy\"");
+    if (hier_start) {
+        const char *obj_start = strchr(hier_start, '{');
+        if (obj_start) {
+            int depth = 1;
+            const char *obj_end = obj_start + 1;
+            while (*obj_end && depth > 0) {
+                if (*obj_end == '{') depth++;
+                else if (*obj_end == '}') depth--;
+                obj_end++;
+            }
+            int len = (int)(obj_end - obj_start);
+            if (depth == 0 && len > 0 && len < out_len) {
+                memcpy(out, obj_start, (size_t)len);
+                out[len] = '\0';
+                rc = len;
+            }
+        }
+    }
+
+    free(json);
+    return rc;
 }
 
 /*
@@ -4164,10 +4184,68 @@ static int chain_mod_set_param_string(chain_instance_t *inst,
     return -1;
 }
 
+static int chain_mod_has_active_sources(const mod_target_state_t *entry) {
+    if (!entry) return 0;
+
+    for (int i = 0; i < MAX_MOD_SOURCES_PER_TARGET; i++) {
+        if (entry->sources[i].active) return 1;
+    }
+    return 0;
+}
+
+static float chain_mod_sum_contributions(const mod_target_state_t *entry) {
+    float sum = 0.0f;
+    if (!entry) return sum;
+
+    for (int i = 0; i < MAX_MOD_SOURCES_PER_TARGET; i++) {
+        if (!entry->sources[i].active) continue;
+        sum += entry->sources[i].contribution;
+    }
+    return sum;
+}
+
+static mod_source_contribution_t *chain_mod_find_source_contribution(mod_target_state_t *entry,
+                                                                     const char *source_id) {
+    if (!entry || !source_id || !source_id[0]) return NULL;
+
+    for (int i = 0; i < MAX_MOD_SOURCES_PER_TARGET; i++) {
+        mod_source_contribution_t *source_entry = &entry->sources[i];
+        if (!source_entry->active) continue;
+        if (strcmp(source_entry->source_id, source_id) == 0) return source_entry;
+    }
+
+    return NULL;
+}
+
+static mod_source_contribution_t *chain_mod_find_or_alloc_source_contribution(mod_target_state_t *entry,
+                                                                               const char *source_id) {
+    if (!entry || !source_id || !source_id[0]) return NULL;
+
+    mod_source_contribution_t *source_entry = chain_mod_find_source_contribution(entry, source_id);
+    if (source_entry) return source_entry;
+
+    for (int i = 0; i < MAX_MOD_SOURCES_PER_TARGET; i++) {
+        source_entry = &entry->sources[i];
+        if (source_entry->active) continue;
+        memset(source_entry, 0, sizeof(*source_entry));
+        source_entry->active = 1;
+        strncpy(source_entry->source_id, source_id, sizeof(source_entry->source_id) - 1);
+        return source_entry;
+    }
+
+    return NULL;
+}
+
+static void chain_mod_remove_source_contribution(mod_target_state_t *entry, const char *source_id) {
+    mod_source_contribution_t *source_entry = chain_mod_find_source_contribution(entry, source_id);
+    if (!source_entry) return;
+    memset(source_entry, 0, sizeof(*source_entry));
+}
+
 static void chain_mod_recompute_effective(mod_target_state_t *entry) {
     if (!entry) return;
 
-    float effective = chain_mod_clampf(entry->base_value + entry->contribution,
+    float effective = chain_mod_clampf(entry->base_value + chain_mod_sum_contributions(entry),
                                        entry->min_val,
                                        entry->max_val);
     if (entry->type == KNOB_TYPE_INT || entry->type == KNOB_TYPE_ENUM) {
@@ -4300,18 +4378,30 @@ static void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_s
     }
 }
 
-static void chain_mod_clear_target_entry(chain_instance_t *inst, mod_target_state_t *entry) {
+static void chain_mod_clear_target_entry(chain_instance_t *inst, mod_target_state_t *entry, int restore_base) {
     if (!inst || !entry || !entry->active) return;
 
     entry->enabled = 0;
-    entry->contribution = 0.0f;
-    entry->effective_value = entry->base_value;
-    chain_mod_apply_effective_value(inst, entry, 1);
+    if (restore_base) {
+        entry->effective_value = entry->base_value;
+        chain_mod_apply_effective_value(inst, entry, 1);
+    }
     memset(entry, 0, sizeof(*entry));
 
     while (inst->mod_target_count > 0 &&
            !inst->mod_targets[inst->mod_target_count - 1].active) {
         inst->mod_target_count--;
+    }
+}
+
+static void chain_mod_clear_target_entries(chain_instance_t *inst, const char *target, int restore_base) {
+    if (!inst || !target || !target[0]) return;
+
+    for (int i = 0; i < inst->mod_target_count && i < MAX_MOD_TARGETS; i++) {
+        mod_target_state_t *entry = &inst->mod_targets[i];
+        if (!entry->active) continue;
+        if (strcmp(entry->target, target) != 0) continue;
+        chain_mod_clear_target_entry(inst, entry, restore_base);
     }
 }
 
@@ -4371,15 +4461,30 @@ static int chain_mod_emit_value(void *ctx,
     chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
     if (!pinfo) {
         mod_target_state_t *stale = chain_mod_find_target_entry(inst, target, param);
-        if (stale && stale->active && strcmp(stale->source_id, source_id) == 0) {
-            chain_mod_clear_target_entry(inst, stale);
+        if (stale && stale->active) {
+            chain_mod_remove_source_contribution(stale, source_id);
+            if (!chain_mod_has_active_sources(stale)) {
+                chain_mod_clear_target_entry(inst, stale, 0);
+            }
         }
         return -1;
     }
-    if (pinfo->type == KNOB_TYPE_ENUM) return -1;  /* v1 numeric only */
+    if (pinfo->type == KNOB_TYPE_ENUM) {
+        mod_target_state_t *stale = chain_mod_find_target_entry(inst, target, param);
+        if (stale && stale->active) {
+            chain_mod_remove_source_contribution(stale, source_id);
+            if (!chain_mod_has_active_sources(stale)) {
+                chain_mod_clear_target_entry(inst, stale, 1);
+            }
+        }
+        return -1;  /* v1 numeric only */
+    }
 
     mod_target_state_t *entry = chain_mod_alloc_target_entry(inst, target, param);
     if (!entry) return -1;
+
+    mod_source_contribution_t *source_entry = chain_mod_find_or_alloc_source_contribution(entry, source_id);
+    if (!source_entry) return -1;
 
     if (!entry->enabled) {
         float base = pinfo->default_val;
@@ -4390,8 +4495,6 @@ static int chain_mod_emit_value(void *ctx,
         entry->base_value = chain_mod_clampf(base, pinfo->min_val, pinfo->max_val);
     }
 
-    strncpy(entry->source_id, source_id, sizeof(entry->source_id) - 1);
-    entry->enabled = 1;
     entry->type = pinfo->type;
     entry->min_val = pinfo->min_val;
     entry->max_val = pinfo->max_val;
@@ -4409,7 +4512,8 @@ static int chain_mod_emit_value(void *ctx,
         range_span = 1.0f;
     }
     float range_scale = bipolar ? (0.5f * range_span) : range_span;
-    entry->contribution = ((mod_signal * depth) + offset) * range_scale;
+    source_entry->contribution = ((mod_signal * depth) + offset) * range_scale;
+    entry->enabled = chain_mod_has_active_sources(entry);
     chain_mod_apply_effective_value(inst, entry, 0);
     return 0;
 }
@@ -4423,8 +4527,20 @@ static void chain_mod_clear_source(void *ctx, const char *source_id) {
     for (int i = 0; i < inst->mod_target_count && i < MAX_MOD_TARGETS; i++) {
         mod_target_state_t *entry = &inst->mod_targets[i];
         if (!entry->active) continue;
-        if (!clear_all && strcmp(entry->source_id, source_id) != 0) continue;
-        chain_mod_clear_target_entry(inst, entry);
+
+        if (clear_all) {
+            chain_mod_clear_target_entry(inst, entry, 1);
+            continue;
+        }
+
+        chain_mod_remove_source_contribution(entry, source_id);
+        if (!chain_mod_has_active_sources(entry)) {
+            chain_mod_clear_target_entry(inst, entry, 1);
+            continue;
+        }
+
+        entry->enabled = 1;
+        chain_mod_apply_effective_value(inst, entry, 0);
     }
 }
 
@@ -4551,6 +4667,7 @@ static int v2_synth_get_error(chain_instance_t *inst, char *buf, int buf_len) {
 /* V2 unload synth */
 static void v2_unload_synth(chain_instance_t *inst) {
     if (!inst) return;
+    chain_mod_clear_target_entries(inst, "synth", 0);
 
     if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->destroy_instance) {
         inst->synth_plugin_v2->destroy_instance(inst->synth_instance);
@@ -4577,6 +4694,10 @@ static void v2_unload_all_audio_fx(chain_instance_t *inst) {
     if (!inst) return;
 
     for (int i = 0; i < inst->fx_count; i++) {
+        char target_name[16];
+        snprintf(target_name, sizeof(target_name), "fx%d", i + 1);
+        chain_mod_clear_target_entries(inst, target_name, 0);
+
         if (inst->fx_is_v2[i]) {
             if (inst->fx_plugins_v2[i] && inst->fx_instances[i] && inst->fx_plugins_v2[i]->destroy_instance) {
                 inst->fx_plugins_v2[i]->destroy_instance(inst->fx_instances[i]);
@@ -4600,6 +4721,7 @@ static void v2_unload_all_audio_fx(chain_instance_t *inst) {
         inst->fx_param_counts[i] = 0;
         inst->mod_param_refresh_ms_fx[i] = 0;
         inst->current_fx_modules[i][0] = '\0';
+        inst->fx_ui_hierarchy[i][0] = '\0';
     }
     inst->fx_count = 0;
 }
@@ -4607,6 +4729,9 @@ static void v2_unload_all_audio_fx(chain_instance_t *inst) {
 /* V2 unload a single audio FX slot */
 static void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
     if (!inst || slot < 0 || slot >= MAX_AUDIO_FX) return;
+    char target_name[16];
+    snprintf(target_name, sizeof(target_name), "fx%d", slot + 1);
+    chain_mod_clear_target_entries(inst, target_name, 0);
 
     if (inst->fx_is_v2[slot]) {
         if (inst->fx_plugins_v2[slot] && inst->fx_instances[slot] && inst->fx_plugins_v2[slot]->destroy_instance) {
@@ -4631,6 +4756,7 @@ static void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
     inst->fx_param_counts[slot] = 0;
     inst->mod_param_refresh_ms_fx[slot] = 0;
     inst->current_fx_modules[slot][0] = '\0';
+    inst->fx_ui_hierarchy[slot][0] = '\0';
 }
 
 /* V2 load audio FX into a specific slot */
@@ -4723,8 +4849,10 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
         inst->fx_is_v2[slot] = 0;
         inst->fx_on_midi[slot] = NULL;
         inst->current_fx_modules[slot][0] = '\0';
+        inst->fx_ui_hierarchy[slot][0] = '\0';
         return -1;
     }
+    parse_ui_hierarchy_cache(fx_dir, inst->fx_ui_hierarchy[slot], sizeof(inst->fx_ui_hierarchy[slot]));
     inst->mod_param_refresh_ms_fx[slot] = 0;
 
     /* Update fx_count to include this slot */
@@ -4943,8 +5071,10 @@ static int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
         inst->fx_is_v2[slot] = 0;
         inst->fx_on_midi[slot] = NULL;
         inst->current_fx_modules[slot][0] = '\0';
+        inst->fx_ui_hierarchy[slot][0] = '\0';
         return -1;
     }
+    parse_ui_hierarchy_cache(fx_dir, inst->fx_ui_hierarchy[slot], sizeof(inst->fx_ui_hierarchy[slot]));
     inst->mod_param_refresh_ms_fx[slot] = 0;
 
     inst->fx_count++;
@@ -7043,16 +7173,22 @@ static int chain_param_key_matches(const char *requested_key, const char *meta_k
     if (strcmp(suffix, meta_key) != 0) return 0;
     if (*(suffix - 1) != '_') return 0;
 
-    const char *prefix_end = suffix - 1;
-    int has_digit = 0;
-    for (const char *p = requested_key; p < prefix_end; p++) {
-        if (*p >= '0' && *p <= '9') {
-            has_digit = 1;
-            break;
+    /* Require strict "..._<index>_<meta_key>" shape for suffix fallback. */
+    const char *idx_end = suffix - 1;  /* underscore before suffix */
+    const char *idx_start = idx_end;
+    while (idx_start > requested_key && *(idx_start - 1) != '_') {
+        idx_start--;
+    }
+    if (idx_start <= requested_key || *(idx_start - 1) != '_') return 0;
+    if (idx_start >= idx_end) return 0;
+
+    for (const char *p = idx_start; p < idx_end; p++) {
+        if (!isdigit((unsigned char)*p)) {
+            return 0;
         }
     }
 
-    return has_digit;
+    return 1;
 }
 
 /*
@@ -7434,6 +7570,18 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         int base_result = chain_mod_get_base_for_subkey(inst, "fx1", subkey, buf, buf_len);
         if (base_result >= 0) return base_result;
 
+        /* For ui_hierarchy: return cached JSON from module.json */
+        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->fx_count > 0) {
+            if (inst->fx_ui_hierarchy[0][0]) {
+                int len = strlen(inst->fx_ui_hierarchy[0]);
+                if (len < buf_len) {
+                    strcpy(buf, inst->fx_ui_hierarchy[0]);
+                    return len;
+                }
+            }
+            return -1;
+        }
+
         /* For chain_params: try plugin first, fall back to parsed module.json data */
         if (strcmp(subkey, "chain_params") == 0 && inst->fx_count > 0) {
             /* Try plugin's own chain_params handler first */
@@ -7497,6 +7645,18 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         const char *subkey = key + 4;
         int base_result = chain_mod_get_base_for_subkey(inst, "fx2", subkey, buf, buf_len);
         if (base_result >= 0) return base_result;
+
+        /* For ui_hierarchy: return cached JSON from module.json */
+        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->fx_count > 1) {
+            if (inst->fx_ui_hierarchy[1][0]) {
+                int len = strlen(inst->fx_ui_hierarchy[1]);
+                if (len < buf_len) {
+                    strcpy(buf, inst->fx_ui_hierarchy[1]);
+                    return len;
+                }
+            }
+            return -1;
+        }
 
         /* For chain_params: try plugin first, fall back to parsed module.json data */
         if (strcmp(subkey, "chain_params") == 0 && inst->fx_count > 1) {
