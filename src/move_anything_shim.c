@@ -1422,6 +1422,11 @@ static uint32_t shadow_midi_to_move_last_midi_in_occupancy = 0;
 static uint8_t shadow_midi_to_move_note_state[16][128];
 static uint32_t shadow_internal_poly_aftertouch_drop_count = 0;
 static uint32_t shadow_internal_chan_aftertouch_drop_count = 0;
+static uint32_t shadow_external_inject_probe_counter = 0;
+static uint32_t shadow_external_inject_last_forwarded[SHADOW_CHAIN_INSTANCES];
+static uint8_t shadow_external_inject_forwarded_seen[SHADOW_CHAIN_INSTANCES];
+static uint64_t shadow_external_inject_last_activity_ms = 0;
+static int shadow_external_inject_mode_enabled = 0;
 
 static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
 static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
@@ -1795,6 +1800,82 @@ static int shadow_midi_to_move_diag_enabled(void)
     return enabled;
 }
 
+static int shadow_is_external_source_mode(const char *mode)
+{
+    if (!mode || !mode[0]) return 0;
+    if (strcmp(mode, "external") == 0) return 1;
+    /* Enum index fallback from UI serialization. */
+    if (strcmp(mode, "2") == 0) return 1;
+    return 0;
+}
+
+static void shadow_refresh_external_inject_state(void)
+{
+    /* Poll slowly to avoid frequent get_param() calls in ioctl cadence. */
+    if ((shadow_external_inject_probe_counter++ % 64u) != 0u) return;
+    if (!shadow_plugin_v2 || !shadow_plugin_v2->get_param) {
+        shadow_external_inject_mode_enabled = 0;
+        return;
+    }
+
+    uint64_t now = now_mono_ms();
+    int enabled = 0;
+    for (int slot = 0; slot < SHADOW_CHAIN_INSTANCES; ++slot) {
+        shadow_chain_slot_t *s = &shadow_chain_slots[slot];
+        if (!s->active || !s->instance) {
+            shadow_external_inject_forwarded_seen[slot] = 0;
+            continue;
+        }
+
+        char module_buf[128];
+        int module_len = shadow_plugin_v2->get_param(
+            s->instance, "synth:module", module_buf, (int)sizeof(module_buf));
+        if (module_len <= 0) {
+            shadow_external_inject_forwarded_seen[slot] = 0;
+            continue;
+        }
+        if (module_len >= (int)sizeof(module_buf)) module_len = (int)sizeof(module_buf) - 1;
+        module_buf[module_len] = '\0';
+        if (!strstr(module_buf, "midi_inject_test")) {
+            shadow_external_inject_forwarded_seen[slot] = 0;
+            continue;
+        }
+
+        char mode_buf[32];
+        int mode_len = shadow_plugin_v2->get_param(
+            s->instance, "synth:source_mode", mode_buf, (int)sizeof(mode_buf));
+        if (mode_len <= 0) {
+            shadow_external_inject_forwarded_seen[slot] = 0;
+            continue;
+        }
+        if (mode_len >= (int)sizeof(mode_buf)) mode_len = (int)sizeof(mode_buf) - 1;
+        mode_buf[mode_len] = '\0';
+        if (!shadow_is_external_source_mode(mode_buf)) {
+            shadow_external_inject_forwarded_seen[slot] = 0;
+            continue;
+        }
+
+        enabled = 1;
+
+        char fwd_buf[32];
+        int fwd_len = shadow_plugin_v2->get_param(
+            s->instance, "synth:forwarded_packets", fwd_buf, (int)sizeof(fwd_buf));
+        if (fwd_len > 0) {
+            if (fwd_len >= (int)sizeof(fwd_buf)) fwd_len = (int)sizeof(fwd_buf) - 1;
+            fwd_buf[fwd_len] = '\0';
+            uint32_t fwd = (uint32_t)strtoul(fwd_buf, NULL, 10);
+            if (shadow_external_inject_forwarded_seen[slot] &&
+                fwd != shadow_external_inject_last_forwarded[slot]) {
+                shadow_external_inject_last_activity_ms = now;
+            }
+            shadow_external_inject_last_forwarded[slot] = fwd;
+            shadow_external_inject_forwarded_seen[slot] = 1;
+        }
+    }
+
+    shadow_external_inject_mode_enabled = enabled;
+}
+
 /* Suppress high-rate internal aftertouch from Move pads.
  * This stream is a known trigger for native engine instability when combined
  * with mailbox MIDI injection; sequencer-driven input (no live pressure stream)
@@ -1802,6 +1883,13 @@ static int shadow_midi_to_move_diag_enabled(void)
 static int shadow_should_suppress_internal_aftertouch(uint8_t cin, uint8_t cable, uint8_t status)
 {
     if (cable != 0x00) return 0;  /* Only Move internal cable */
+    if (!shadow_external_inject_mode_enabled) return 0;
+    if (shadow_external_inject_last_activity_ms == 0) return 0;
+
+    /* Suppress only while external-inject forwarding is actively happening. */
+    uint64_t now = now_mono_ms();
+    if ((now - shadow_external_inject_last_activity_ms) > 1500u) return 0;
+
     uint8_t type = (uint8_t)(status & 0xF0u);
     if (cin == 0x0A && type == 0xA0) return 1;  /* Poly aftertouch */
     if (cin == 0x0D && type == 0xD0) return 1;  /* Channel aftertouch */
@@ -2008,6 +2096,7 @@ static void shadow_drain_midi_to_move_queue(void)
     shadow_midi_to_move_last_cycle_injected = injected;
     shadow_midi_to_move_last_cycle_duplicate_drops = duplicate_drops;
     shadow_midi_to_move_last_cycle_midi_in_full = (uint32_t)(midi_in_full_this_cycle ? 1 : 0);
+    if (injected > 0) shadow_external_inject_last_activity_ms = now_mono_ms();
     shadow_midi_to_move_injected_count += injected;
     shadow_midi_to_move_duplicate_edge_dropped_count += duplicate_drops;
     shadow_midi_to_move_midi_in_full_count += (uint32_t)(midi_in_full_this_cycle ? 1 : 0);
@@ -3604,6 +3693,7 @@ do_ioctl:
         uint8_t *hw_midi = hardware_mmap_addr + MIDI_IN_OFFSET;
         uint8_t *sh_midi = shadow_mailbox + MIDI_IN_OFFSET;
         int overtake_mode = shadow_control ? shadow_control->overtake_mode : 0;
+        shadow_refresh_external_inject_state();
 
         if (shadow_display_mode && shadow_control) {
             /* Filter MIDI_IN: zero out jog/back/knobs */
