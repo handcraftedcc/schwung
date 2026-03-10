@@ -65,6 +65,22 @@ if ! rg -n "shadow_midi_to_move_is_duplicate_edge" "$shim" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Internal-mode continuity: duplicate-edge suppression must not blanket-drop
+# repeated internal note-ons (arp/held-note streams).
+dup_line=$(rg -n "shadow_midi_to_move_is_duplicate_edge\\(pkt\\)" "$shim" | head -n 1 | cut -d: -f1 || true)
+if [ -z "${dup_line}" ]; then
+  echo "FAIL: Missing duplicate-edge call site in queue drain path" >&2
+  exit 1
+fi
+dup_start=$((dup_line - 3))
+if [ "${dup_start}" -lt 1 ]; then dup_start=1; fi
+dup_end=$((dup_line + 3))
+dup_ctx=$(sed -n "${dup_start},${dup_end}p" "$shim")
+if ! echo "$dup_ctx" | rg -q "internal_only_mode"; then
+  echo "FAIL: Duplicate-edge suppression should be gated for internal-only mode" >&2
+  exit 1
+fi
+
 # Diagnostic hook for mailbox occupancy and insertion position.
 if ! rg -n "midi_to_move diag" "$shim" >/dev/null 2>&1; then
   echo "FAIL: Missing midi_to_move diagnostic telemetry log" >&2

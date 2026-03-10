@@ -2186,7 +2186,9 @@ static void shadow_drain_midi_to_move_queue(void)
             continue;
         }
 
-        if (shadow_midi_to_move_is_duplicate_edge(pkt)) {
+        int internal_only_mode =
+            (shadow_internal_inject_mode_enabled && !shadow_external_inject_mode_enabled);
+        if (!internal_only_mode && shadow_midi_to_move_is_duplicate_edge(pkt)) {
             shadow_midi_to_move_dropped_count++;
             duplicate_drops++;
             read_idx++;

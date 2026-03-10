@@ -99,3 +99,31 @@ Purpose: append-only notes for debugging `midi_to_move` injection stability in `
 ### Open questions
 - Why held-note continuity in internal mode intermittently stops even when source gate regressions are removed.
 - Whether intermittent stop aligns with clock/transport state transitions in arp path or with internal note lifecycle/state expiry.
+
+## 2026-03-10 (internal-mode spotty output follow-up)
+
+### Evidence observed
+- User reported internal output still spotty/worse even after reverting source-gate experiment commits.
+- `midi_inject_test.log` showed internal-mode forwarding bursts (`tx usb0`) followed by long quiet windows.
+- Shim diagnostics during those windows showed repeated duplicate drops (`dup_drop=1`) with no busy/full pressure (`busy_drop=0`, `full=0`), pointing to duplicate-edge suppression rather than mailbox capacity.
+
+### Hypothesis
+- Internal arp/held-note streams can emit repeated note-ons for an already-held pitch before a matching note-off edge arrives.
+- Global duplicate-edge suppression treats those repeated note-ons as duplicates and drops them, causing audible dropout in internal mode.
+
+### Change implemented
+- In `shadow_drain_midi_to_move_queue`, gated duplicate-edge suppression off for internal-only injection mode:
+  - keep duplicate-edge behavior for external/both modes
+  - bypass duplicate-edge drop when `internal_only_mode` is active
+
+### Verification
+- Added/updated regression assertion in:
+  - `tests/shadow/test_midi_to_move_injection_stability.sh`
+  - now requires duplicate-edge suppression to be gated for internal-only mode
+- Test results:
+  - `tests/shadow/test_midi_to_move_injection_stability.sh` PASS
+  - `bash tests/host/test_chain_v2_midi_source_gate.sh` PASS
+
+### Open questions
+- Whether this resolves user-reported spotty internal continuity end-to-end on hardware.
+- If any external-mode regressions appear, whether duplicate-edge policy needs a time-windowed filter instead of mode gating.
