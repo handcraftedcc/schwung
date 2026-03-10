@@ -275,3 +275,26 @@ Purpose: append-only notes for debugging `midi_to_move` injection stability in `
 
 ### Open questions
 - What upstream component/state causes the ~1.5s cadence gaps in internal-source note generation (e.g. MIDI FX settings/state, sync/rhythm config, or transport state machine not emitting FA/FB/FC)?
+
+## 2026-03-10 (chain v2 gap detectors for internal-mode intermittent silence)
+
+### Change implemented
+- Added targeted debug-only gap detectors in `src/modules/chain/dsp/chain_host.c` (active only when synth is `midi_inject_test`):
+  - `v2_on_midi` detector:
+    - logs `v2-midi gap in-active-out-zero ...` when internal note-edge input continues but MIDI-FX output remains zero for `>800ms`.
+    - logs `v2-midi gap recovered ...` when output resumes after a detected zero-output interval.
+  - `v2_tick_midi_fx` detector:
+    - logs `v2-midi gap tick-silent ...` when stream activity is recent but MIDI-FX tick emits no note edges for `>800ms`.
+- Added per-instance debug state to track:
+  - last internal note-edge input time
+  - last note-edge output time
+  - zero-output and tick-silent interval timing/counters
+
+### Verification
+- `tests/shadow/test_midi_to_move_injection_stability.sh` PASS
+- `bash tests/host/test_chain_v2_midi_source_gate.sh` PASS
+
+### Purpose
+- Next repro should distinguish:
+  - note input still arriving but MIDI-FX suppressing output, vs
+  - MIDI-FX tick going silent despite recent stream activity.
