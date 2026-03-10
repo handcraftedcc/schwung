@@ -93,23 +93,6 @@ Purpose: append-only notes for debugging `midi_to_move` injection stability in `
   - helper checks `midi_inject_test` module + synth `source_mode`
   - internal/external source rules are enforced
 
-## 2026-03-10 (regression follow-up: internal path muted)
-
-### Evidence observed
-- Regression report: in `source_mode=internal`, `superarp` remained active but injector forwarding could stop.
-- Runtime logs showed users switching `superarp` sync between `internal` and `clock` during the same test session.
-
-### Hypothesis
-- New pre-MIDI-FX guard blocked all external-source packets in internal mode, including realtime clock/transport (`0xF8..0xFF`) needed by clock-synced MIDI FX.
-
-### Change implemented
-- Relaxed `inst_midi_inject_test_source_allowed(...)`:
-  - still enforces source-mode gating for note/control feedback
-  - always allows realtime system messages (`status >= 0xF8`) through to MIDI FX
-
-### Verification
-- Updated host regression test to assert realtime clock passthrough rule in helper.
-
 ## Notes format for next entries
 - `Date`
 - `Evidence observed`

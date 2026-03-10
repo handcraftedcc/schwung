@@ -5723,20 +5723,12 @@ static int inst_midi_source_allowed(const chain_instance_t *inst, int source)
 
 /* For midi_inject_test, apply source_mode before MIDI FX so external feedback
  * cannot perturb held-note/arp state while testing internal-only injection. */
-static int inst_midi_inject_test_source_allowed(const chain_instance_t *inst,
-                                                const uint8_t *msg, int len, int source)
+static int inst_midi_inject_test_source_allowed(const chain_instance_t *inst, int source)
 {
     if (!inst) return 0;
     if (source == MOVE_MIDI_SOURCE_HOST) return 1;
-    if (!msg || len < 1) return 1;
 
     if (strcmp(inst->current_synth_module, "midi_inject_test") != 0) {
-        return 1;
-    }
-
-    /* Keep external realtime clock/transport available for clock-synced MIDI FX
-     * while still gating note/control feedback by source_mode. */
-    if (msg[0] >= 0xF8) {
         return 1;
     }
 
@@ -5889,7 +5881,7 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
     }
 
     if (!inst_midi_source_allowed(inst, source)) return;
-    if (!inst_midi_inject_test_source_allowed(inst, msg, len, source)) return;
+    if (!inst_midi_inject_test_source_allowed(inst, source)) return;
 
     /* Process through MIDI FX modules (if any loaded) */
     uint8_t out_msgs[MIDI_FX_MAX_OUT_MSGS][3];

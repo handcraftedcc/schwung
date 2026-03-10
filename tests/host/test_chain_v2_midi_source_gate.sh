@@ -23,7 +23,7 @@ if ! echo "$ctx" | rg -q "inst_midi_source_allowed\\(inst, source\\)"; then
   exit 1
 fi
 
-if ! echo "$ctx" | rg -q "inst_midi_inject_test_source_allowed\\(inst, msg, len, source\\)"; then
+if ! echo "$ctx" | rg -q "inst_midi_inject_test_source_allowed\\(inst, source\\)"; then
   echo "FAIL: v2_on_midi missing midi_inject_test pre-MIDI-FX source gate call" >&2
   exit 1
 fi
@@ -67,11 +67,6 @@ fi
 
 if ! echo "$helper" | rg -q "source == MOVE_MIDI_SOURCE_EXTERNAL"; then
   echo "FAIL: helper missing external source-mode allow rule" >&2
-  exit 1
-fi
-
-if ! echo "$helper" | rg -q "msg\\[0\\] >= 0xF8"; then
-  echo "FAIL: helper missing realtime-clock passthrough rule" >&2
   exit 1
 fi
 
