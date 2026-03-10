@@ -9,6 +9,7 @@
 
 #include "host/plugin_api_v1.h"
 #include "host/shadow_midi_to_move.h"
+#include "host/shadow_midi_to_move_shm.h"
 
 #define SELF_ECHO_WINDOW_MS 80u
 #define SELF_ECHO_RING_SIZE 128u
@@ -50,6 +51,7 @@ typedef struct midi_inject_test_instance {
 static const host_api_v1_t *g_host = NULL;
 static int g_log_fd = -1;
 static uint32_t g_instance_count = 0;
+static uint32_t g_external_mode_instance_count = 0;
 static const char *k_log_path = "/data/UserData/move-anything/midi_inject_test.log";
 static const char *k_ui_hierarchy_json =
     "{"
@@ -147,6 +149,18 @@ static source_mode_t parse_source_mode(const char *val)
     if (idx <= 0) return SOURCE_MODE_BOTH;
     if (idx == 1) return SOURCE_MODE_INTERNAL;
     return SOURCE_MODE_EXTERNAL;
+}
+
+static int source_mode_is_external_only(source_mode_t mode)
+{
+    return mode == SOURCE_MODE_EXTERNAL;
+}
+
+static void refresh_external_mode_flag(void)
+{
+    (void)shadow_midi_to_move_set_mode_flag(
+        SHADOW_MIDI_TO_MOVE_MODE_EXTERNAL,
+        g_external_mode_instance_count > 0 ? 1 : 0);
 }
 
 static int source_is_allowed(const midi_inject_test_instance_t *inst, int source)
@@ -266,6 +280,10 @@ static void* create_instance(const char *module_dir, const char *json_defaults)
 
     inst->output_channel = -1;
     inst->source_mode = SOURCE_MODE_EXTERNAL;
+    if (source_mode_is_external_only(inst->source_mode)) {
+        g_external_mode_instance_count++;
+        refresh_external_mode_flag();
+    }
 
     midi_inject_logf("instance created (queue=%s, source=%s, out=Thru)",
                      opened ? "ok" : "fail",
@@ -277,6 +295,11 @@ static void destroy_instance(void *instance)
 {
     midi_inject_test_instance_t *inst = (midi_inject_test_instance_t *)instance;
     if (inst) {
+        if (source_mode_is_external_only(inst->source_mode) &&
+            g_external_mode_instance_count > 0) {
+            g_external_mode_instance_count--;
+            refresh_external_mode_flag();
+        }
         midi_inject_logf("instance destroyed recv=%u fwd=%u drop=%u source=%u system=%u non_channel=%u aftertouch=%u self_echo=%u queue=%u",
                          inst->received_packets,
                          inst->forwarded_packets,
@@ -327,7 +350,16 @@ static void set_param(void *instance, const char *key, const char *val)
     }
 
     if (strcmp(key, "source_mode") == 0) {
+        source_mode_t old_mode = inst->source_mode;
         inst->source_mode = parse_source_mode(val);
+        if (source_mode_is_external_only(old_mode) != source_mode_is_external_only(inst->source_mode)) {
+            if (source_mode_is_external_only(inst->source_mode)) {
+                g_external_mode_instance_count++;
+            } else if (g_external_mode_instance_count > 0) {
+                g_external_mode_instance_count--;
+            }
+            refresh_external_mode_flag();
+        }
         midi_inject_logf("source mode set to %s", source_mode_to_string(inst->source_mode));
         return;
     }

@@ -52,6 +52,19 @@ int shadow_midi_to_move_open(void)
     return 1;
 }
 
+int shadow_midi_to_move_set_mode_flag(uint32_t flag, int enabled)
+{
+    if (!g_shadow_midi_to_move && !shadow_midi_to_move_open()) return 0;
+    if (!flag) return 0;
+
+    if (enabled) {
+        __atomic_fetch_or(&g_shadow_midi_to_move->mode_flags, flag, __ATOMIC_ACQ_REL);
+    } else {
+        __atomic_fetch_and(&g_shadow_midi_to_move->mode_flags, ~flag, __ATOMIC_ACQ_REL);
+    }
+    return 1;
+}
+
 int shadow_midi_to_move_send_usb_packet(uint8_t p0, uint8_t p1, uint8_t p2, uint8_t p3)
 {
     if (!g_shadow_midi_to_move && !shadow_midi_to_move_open()) return 0;

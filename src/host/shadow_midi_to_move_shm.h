@@ -6,9 +6,10 @@
 
 #define SHADOW_MIDI_TO_MOVE_SHM_NAME "/shadow_midi_to_move"
 #define SHADOW_MIDI_TO_MOVE_MAGIC 0x534d324du  /* "SM2M" */
-#define SHADOW_MIDI_TO_MOVE_VERSION 2u
+#define SHADOW_MIDI_TO_MOVE_VERSION 3u
 #define SHADOW_MIDI_TO_MOVE_DEFAULT_CAPACITY 1024u
 #define SHADOW_MIDI_TO_MOVE_PACKET_SIZE 4u
+#define SHADOW_MIDI_TO_MOVE_MODE_EXTERNAL 0x01u
 
 /* Monotonic indices: producers reserve via atomic fetch-add on write_idx.
  * Reader advances read_idx after successful injection.
@@ -23,6 +24,7 @@ typedef struct shadow_midi_to_move_t {
     uint32_t capacity;
     uint32_t write_idx;
     uint32_t read_idx;
+    uint32_t mode_flags;  /* SHADOW_MIDI_TO_MOVE_MODE_* bitmask */
     uint8_t data[];
 } shadow_midi_to_move_t;
 

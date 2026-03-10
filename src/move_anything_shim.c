@@ -1414,11 +1414,18 @@ static uint32_t shadow_midi_to_move_injected_count = 0;
 static uint32_t shadow_midi_to_move_dropped_count = 0;
 static uint32_t shadow_midi_to_move_last_cycle_injected = 0;
 static uint32_t shadow_midi_to_move_duplicate_edge_dropped_count = 0;
+static uint32_t shadow_midi_to_move_duplicate_mailbox_dropped_count = 0;
+static uint32_t shadow_midi_to_move_interleave_dropped_count = 0;
 static uint32_t shadow_midi_to_move_midi_in_full_count = 0;
 static uint32_t shadow_midi_to_move_last_cycle_duplicate_drops = 0;
+static uint32_t shadow_midi_to_move_last_cycle_mailbox_duplicates = 0;
+static uint32_t shadow_midi_to_move_last_cycle_interleave_drops = 0;
 static uint32_t shadow_midi_to_move_last_cycle_midi_in_full = 0;
 static int shadow_midi_to_move_last_insert_slot = -1;
 static uint32_t shadow_midi_to_move_last_midi_in_occupancy = 0;
+static uint64_t shadow_midi_to_move_last_note_inject_ms = 0;
+static int shadow_midi_to_move_last_note_slot = -1;
+static uint8_t shadow_midi_to_move_last_note_pkt[4] = {0};
 static uint8_t shadow_midi_to_move_note_state[16][128];
 static uint32_t shadow_internal_poly_aftertouch_drop_count = 0;
 static uint32_t shadow_internal_chan_aftertouch_drop_count = 0;
@@ -1426,6 +1433,7 @@ static uint32_t shadow_external_inject_probe_counter = 0;
 static uint32_t shadow_external_inject_last_forwarded[SHADOW_CHAIN_INSTANCES];
 static uint8_t shadow_external_inject_forwarded_seen[SHADOW_CHAIN_INSTANCES];
 static uint64_t shadow_external_inject_last_activity_ms = 0;
+static uint64_t shadow_external_inject_mode_seen_ms = 0;
 static int shadow_external_inject_mode_enabled = 0;
 
 static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
@@ -1764,6 +1772,7 @@ static void init_shadow_shm(void)
                     shadow_midi_to_move_shm->capacity = SHADOW_MIDI_TO_MOVE_DEFAULT_CAPACITY;
                     __atomic_store_n(&shadow_midi_to_move_shm->write_idx, 0u, __ATOMIC_RELEASE);
                     __atomic_store_n(&shadow_midi_to_move_shm->read_idx, 0u, __ATOMIC_RELEASE);
+                    __atomic_store_n(&shadow_midi_to_move_shm->mode_flags, 0u, __ATOMIC_RELEASE);
                 }
             } else {
                 printf("Shadow: Failed to size midi_to_move shm\n");
@@ -1811,8 +1820,9 @@ static int shadow_is_external_source_mode(const char *mode)
 
 static void shadow_refresh_external_inject_state(void)
 {
-    /* Poll slowly to avoid frequent get_param() calls in ioctl cadence. */
-    if ((shadow_external_inject_probe_counter++ % 64u) != 0u) return;
+    /* Detect quickly while disabled (startup), then back off while enabled. */
+    uint32_t probe_period = shadow_external_inject_mode_enabled ? 64u : 1u;
+    if ((shadow_external_inject_probe_counter++ % probe_period) != 0u) return;
     if (!shadow_plugin_v2 || !shadow_plugin_v2->get_param) {
         shadow_external_inject_mode_enabled = 0;
         return;
@@ -1820,57 +1830,79 @@ static void shadow_refresh_external_inject_state(void)
 
     uint64_t now = now_mono_ms();
     int enabled = 0;
-    for (int slot = 0; slot < SHADOW_CHAIN_INSTANCES; ++slot) {
-        shadow_chain_slot_t *s = &shadow_chain_slots[slot];
-        if (!s->active || !s->instance) {
-            shadow_external_inject_forwarded_seen[slot] = 0;
-            continue;
-        }
 
-        char module_buf[128];
-        int module_len = shadow_plugin_v2->get_param(
-            s->instance, "synth:module", module_buf, (int)sizeof(module_buf));
-        if (module_len <= 0) {
-            shadow_external_inject_forwarded_seen[slot] = 0;
-            continue;
+    /* Primary signal: producer sets queue mode flag directly. */
+    if (shadow_midi_to_move_shm) {
+        uint32_t mode_flags =
+            __atomic_load_n(&shadow_midi_to_move_shm->mode_flags, __ATOMIC_ACQUIRE);
+        if ((mode_flags & SHADOW_MIDI_TO_MOVE_MODE_EXTERNAL) != 0u) {
+            enabled = 1;
+            shadow_external_inject_mode_seen_ms = now;
         }
-        if (module_len >= (int)sizeof(module_buf)) module_len = (int)sizeof(module_buf) - 1;
-        module_buf[module_len] = '\0';
-        if (!strstr(module_buf, "midi_inject_test")) {
-            shadow_external_inject_forwarded_seen[slot] = 0;
-            continue;
-        }
+    }
 
-        char mode_buf[32];
-        int mode_len = shadow_plugin_v2->get_param(
-            s->instance, "synth:source_mode", mode_buf, (int)sizeof(mode_buf));
-        if (mode_len <= 0) {
-            shadow_external_inject_forwarded_seen[slot] = 0;
-            continue;
-        }
-        if (mode_len >= (int)sizeof(mode_buf)) mode_len = (int)sizeof(mode_buf) - 1;
-        mode_buf[mode_len] = '\0';
-        if (!shadow_is_external_source_mode(mode_buf)) {
-            shadow_external_inject_forwarded_seen[slot] = 0;
-            continue;
-        }
-
-        enabled = 1;
-
-        char fwd_buf[32];
-        int fwd_len = shadow_plugin_v2->get_param(
-            s->instance, "synth:forwarded_packets", fwd_buf, (int)sizeof(fwd_buf));
-        if (fwd_len > 0) {
-            if (fwd_len >= (int)sizeof(fwd_buf)) fwd_len = (int)sizeof(fwd_buf) - 1;
-            fwd_buf[fwd_len] = '\0';
-            uint32_t fwd = (uint32_t)strtoul(fwd_buf, NULL, 10);
-            if (shadow_external_inject_forwarded_seen[slot] &&
-                fwd != shadow_external_inject_last_forwarded[slot]) {
-                shadow_external_inject_last_activity_ms = now;
+    /* Fallback for legacy producers that don't set mode_flags. */
+    if (!enabled) {
+        for (int slot = 0; slot < SHADOW_CHAIN_INSTANCES; ++slot) {
+            shadow_chain_slot_t *s = &shadow_chain_slots[slot];
+            if (!s->active || !s->instance) {
+                shadow_external_inject_forwarded_seen[slot] = 0;
+                continue;
             }
-            shadow_external_inject_last_forwarded[slot] = fwd;
-            shadow_external_inject_forwarded_seen[slot] = 1;
+
+            char module_buf[128];
+            int module_len = shadow_plugin_v2->get_param(
+                s->instance, "synth:module", module_buf, (int)sizeof(module_buf));
+            if (module_len <= 0) {
+                shadow_external_inject_forwarded_seen[slot] = 0;
+                continue;
+            }
+            if (module_len >= (int)sizeof(module_buf)) module_len = (int)sizeof(module_buf) - 1;
+            module_buf[module_len] = '\0';
+            if (!strstr(module_buf, "midi_inject_test")) {
+                shadow_external_inject_forwarded_seen[slot] = 0;
+                continue;
+            }
+
+            char mode_buf[32];
+            int mode_len = shadow_plugin_v2->get_param(
+                s->instance, "synth:source_mode", mode_buf, (int)sizeof(mode_buf));
+            if (mode_len <= 0) {
+                shadow_external_inject_forwarded_seen[slot] = 0;
+                continue;
+            }
+            if (mode_len >= (int)sizeof(mode_buf)) mode_len = (int)sizeof(mode_buf) - 1;
+            mode_buf[mode_len] = '\0';
+            if (!shadow_is_external_source_mode(mode_buf)) {
+                shadow_external_inject_forwarded_seen[slot] = 0;
+                continue;
+            }
+
+            enabled = 1;
+            shadow_external_inject_mode_seen_ms = now;
+
+            char fwd_buf[32];
+            int fwd_len = shadow_plugin_v2->get_param(
+                s->instance, "synth:forwarded_packets", fwd_buf, (int)sizeof(fwd_buf));
+            if (fwd_len > 0) {
+                if (fwd_len >= (int)sizeof(fwd_buf)) fwd_len = (int)sizeof(fwd_buf) - 1;
+                fwd_buf[fwd_len] = '\0';
+                uint32_t fwd = (uint32_t)strtoul(fwd_buf, NULL, 10);
+                if (shadow_external_inject_forwarded_seen[slot] &&
+                    fwd != shadow_external_inject_last_forwarded[slot]) {
+                    shadow_external_inject_last_activity_ms = now;
+                }
+                shadow_external_inject_last_forwarded[slot] = fwd;
+                shadow_external_inject_forwarded_seen[slot] = 1;
+            }
         }
+    }
+
+    /* Avoid transient false negatives during chain slot transitions. */
+    if (!enabled && shadow_external_inject_mode_enabled &&
+        shadow_external_inject_mode_seen_ms > 0 &&
+        (now - shadow_external_inject_mode_seen_ms) <= 2000u) {
+        enabled = 1;
     }
 
     shadow_external_inject_mode_enabled = enabled;
@@ -1906,12 +1938,46 @@ static uint32_t shadow_midi_in_count_occupied_slots(const uint8_t *midi_in)
     return occupied;
 }
 
-static int shadow_inject_midi_to_move_packet(const uint8_t pkt[4], int *insert_slot)
+static int shadow_midi_in_contains_packet(const uint8_t *midi_in, const uint8_t pkt[4])
+{
+    if (!midi_in || !pkt) return 0;
+
+    for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+        uint8_t b0 = __atomic_load_n(&midi_in[j + 0], __ATOMIC_ACQUIRE);
+        if (b0 == 0) continue;
+
+        /* Byte0 publication marks slot validity; compare full 4-byte packet. */
+        uint8_t b1 = __atomic_load_n(&midi_in[j + 1], __ATOMIC_ACQUIRE);
+        uint8_t b2 = __atomic_load_n(&midi_in[j + 2], __ATOMIC_ACQUIRE);
+        uint8_t b3 = __atomic_load_n(&midi_in[j + 3], __ATOMIC_ACQUIRE);
+        if (b0 == pkt[0] && b1 == pkt[1] && b2 == pkt[2] && b3 == pkt[3]) return 1;
+    }
+
+    return 0;
+}
+
+typedef struct shadow_midi_to_move_insert_debug_t {
+    int search_start;
+    int contiguous_tail_slot;
+    int sparse_tail_slot;
+    int chosen_slot;
+    int chosen_pass;
+} shadow_midi_to_move_insert_debug_t;
+
+static int shadow_inject_midi_to_move_packet(const uint8_t pkt[4], int *insert_slot,
+                                             shadow_midi_to_move_insert_debug_t *dbg)
 {
     if (!pkt) return 0;
     if (!global_mmap_addr) return 0;
 
     if (insert_slot) *insert_slot = -1;
+    if (dbg) {
+        dbg->search_start = 0;
+        dbg->contiguous_tail_slot = -1;
+        dbg->sparse_tail_slot = -1;
+        dbg->chosen_slot = -1;
+        dbg->chosen_pass = -1;
+    }
 
     uint8_t *midi_in = global_mmap_addr + MIDI_IN_OFFSET;
     int search_start = 0;
@@ -1935,6 +2001,20 @@ static int shadow_inject_midi_to_move_packet(const uint8_t pkt[4], int *insert_s
         }
     }
 
+    if (dbg) {
+        dbg->search_start = search_start;
+        dbg->contiguous_tail_slot = (search_start > 0) ? (search_start - 4) : -1;
+        dbg->sparse_tail_slot = last_non_empty_slot;
+    }
+
+    /* In external-source injection mode, avoid adding packets when native MIDI
+     * already occupies 2+ leading slots. This prevents interleaving patterns
+     * that can trip Move's event-order assertion. */
+    if (shadow_external_inject_mode_enabled && search_start > 4) {
+        if (dbg) dbg->chosen_pass = -2;  /* Busy/interleave guard */
+        return 2;
+    }
+
     /* Prefer appending after the current tail to preserve order.
      * If there is no free slot to the right, wrap and search from the start
      * so injection cannot stall when the tail is near the end of the mailbox. */
@@ -1956,6 +2036,10 @@ static int shadow_inject_midi_to_move_packet(const uint8_t pkt[4], int *insert_s
             __atomic_thread_fence(__ATOMIC_RELEASE);
             __atomic_store_n(&midi_in[j + 0], pkt[0], __ATOMIC_RELEASE);
             if (insert_slot) *insert_slot = j;
+            if (dbg) {
+                dbg->chosen_slot = j;
+                dbg->chosen_pass = pass;
+            }
             return 1;
         }
     }
@@ -2019,6 +2103,8 @@ static void shadow_drain_midi_to_move_queue(void)
 {
     shadow_midi_to_move_last_cycle_injected = 0;
     shadow_midi_to_move_last_cycle_duplicate_drops = 0;
+    shadow_midi_to_move_last_cycle_mailbox_duplicates = 0;
+    shadow_midi_to_move_last_cycle_interleave_drops = 0;
     shadow_midi_to_move_last_cycle_midi_in_full = 0;
 
     if (!shadow_midi_to_move_shm || !global_mmap_addr) return;
@@ -2039,6 +2125,7 @@ static void shadow_drain_midi_to_move_queue(void)
         uint32_t overflow = pending - capacity;
         shadow_midi_to_move_dropped_count += overflow;
         read_idx += overflow;
+        pending = write_idx - read_idx;
     }
 
     const uint32_t *packet_words =
@@ -2046,8 +2133,12 @@ static void shadow_drain_midi_to_move_queue(void)
     uint32_t *ready_words = shadow_midi_to_move_ready(shadow_midi_to_move_shm);
     uint32_t injected = 0;
     uint32_t duplicate_drops = 0;
+    uint32_t mailbox_duplicate_drops = 0;
+    uint32_t interleave_drops = 0;
     int midi_in_full_this_cycle = 0;
     int last_insert_slot = -1;
+    shadow_midi_to_move_insert_debug_t last_insert_dbg;
+    memset(&last_insert_dbg, 0, sizeof(last_insert_dbg));
 
     while (read_idx != write_idx && injected < SHADOW_MIDI_TO_MOVE_MAX_INJECT_PER_CYCLE) {
         uint32_t slot = read_idx % capacity;
@@ -2072,6 +2163,15 @@ static void shadow_drain_midi_to_move_queue(void)
         /* Force USB cable 2 while preserving CIN in low nibble. */
         pkt[0] = (uint8_t)((2u << 4) | (pkt[0] & 0x0Fu));
 
+        if (shadow_external_inject_mode_enabled &&
+            shadow_midi_in_contains_packet(global_mmap_addr + MIDI_IN_OFFSET, pkt)) {
+            shadow_midi_to_move_dropped_count++;
+            duplicate_drops++;
+            mailbox_duplicate_drops++;
+            read_idx++;
+            continue;
+        }
+
         if (shadow_midi_to_move_is_duplicate_edge(pkt)) {
             shadow_midi_to_move_dropped_count++;
             duplicate_drops++;
@@ -2079,7 +2179,16 @@ static void shadow_drain_midi_to_move_queue(void)
             continue;
         }
 
-        if (!shadow_inject_midi_to_move_packet(pkt, &last_insert_slot)) {
+        int insert_rc = shadow_inject_midi_to_move_packet(pkt, &last_insert_slot, &last_insert_dbg);
+        if (insert_rc == 2) {
+            shadow_midi_to_move_dropped_count++;
+            duplicate_drops++;
+            interleave_drops++;
+            read_idx++;
+            continue;
+        }
+
+        if (!insert_rc) {
             midi_in_full_this_cycle = 1;
             break;  /* MIDI_IN full this cycle */
         }
@@ -2095,14 +2204,60 @@ static void shadow_drain_midi_to_move_queue(void)
 
     shadow_midi_to_move_last_cycle_injected = injected;
     shadow_midi_to_move_last_cycle_duplicate_drops = duplicate_drops;
+    shadow_midi_to_move_last_cycle_mailbox_duplicates = mailbox_duplicate_drops;
+    shadow_midi_to_move_last_cycle_interleave_drops = interleave_drops;
     shadow_midi_to_move_last_cycle_midi_in_full = (uint32_t)(midi_in_full_this_cycle ? 1 : 0);
     if (injected > 0) shadow_external_inject_last_activity_ms = now_mono_ms();
     shadow_midi_to_move_injected_count += injected;
     shadow_midi_to_move_duplicate_edge_dropped_count += duplicate_drops;
+    shadow_midi_to_move_duplicate_mailbox_dropped_count += mailbox_duplicate_drops;
+    shadow_midi_to_move_interleave_dropped_count += interleave_drops;
     shadow_midi_to_move_midi_in_full_count += (uint32_t)(midi_in_full_this_cycle ? 1 : 0);
     shadow_midi_to_move_last_insert_slot = last_insert_slot;
     shadow_midi_to_move_last_midi_in_occupancy =
         shadow_midi_in_count_occupied_slots(global_mmap_addr + MIDI_IN_OFFSET);
+
+    /* Focused ordering diagnostics for near-simultaneous note injection windows. */
+    if (shadow_midi_to_move_diag_enabled() && injected > 0) {
+        uint8_t last_pkt[4] = {0};
+        uint32_t last_slot_read = (read_idx - 1u) % capacity;
+        uint32_t last_packet_word = __atomic_load_n(&packet_words[last_slot_read], __ATOMIC_ACQUIRE);
+        last_pkt[0] = (uint8_t)(last_packet_word & 0xFFu);
+        last_pkt[1] = (uint8_t)((last_packet_word >> 8) & 0xFFu);
+        last_pkt[2] = (uint8_t)((last_packet_word >> 16) & 0xFFu);
+        last_pkt[3] = (uint8_t)((last_packet_word >> 24) & 0xFFu);
+
+        uint8_t last_type = (uint8_t)(last_pkt[1] & 0xF0u);
+        int is_note_msg = (last_type == 0x90u || last_type == 0x80u);
+        if (is_note_msg) {
+            uint64_t now = now_mono_ms();
+            uint64_t dt_ms = (shadow_midi_to_move_last_note_inject_ms > 0 &&
+                              now >= shadow_midi_to_move_last_note_inject_ms)
+                                 ? (now - shadow_midi_to_move_last_note_inject_ms)
+                                 : 0;
+            uint32_t pending_after = write_idx - read_idx;
+            uint32_t occ_now = shadow_midi_in_count_occupied_slots(global_mmap_addr + MIDI_IN_OFFSET);
+
+            unified_log("shim", LOG_LEVEL_DEBUG,
+                        "m2m-order: r=%u w=%u p_before=%u p_after=%u pkt=%02X/%02X/%02X/%02X slot=%d pass=%d search=%d ctail=%d stail=%d occ=%u prev_dt_ms=%llu prev_pkt=%02X/%02X/%02X/%02X prev_slot=%d",
+                        read_idx - 1u, write_idx, pending, pending_after,
+                        last_pkt[0], last_pkt[1], last_pkt[2], last_pkt[3],
+                        last_insert_dbg.chosen_slot, last_insert_dbg.chosen_pass,
+                        last_insert_dbg.search_start, last_insert_dbg.contiguous_tail_slot,
+                        last_insert_dbg.sparse_tail_slot, occ_now,
+                        (unsigned long long)dt_ms,
+                        shadow_midi_to_move_last_note_pkt[0], shadow_midi_to_move_last_note_pkt[1],
+                        shadow_midi_to_move_last_note_pkt[2], shadow_midi_to_move_last_note_pkt[3],
+                        shadow_midi_to_move_last_note_slot);
+
+            shadow_midi_to_move_last_note_inject_ms = now;
+            shadow_midi_to_move_last_note_slot = last_insert_dbg.chosen_slot;
+            shadow_midi_to_move_last_note_pkt[0] = last_pkt[0];
+            shadow_midi_to_move_last_note_pkt[1] = last_pkt[1];
+            shadow_midi_to_move_last_note_pkt[2] = last_pkt[2];
+            shadow_midi_to_move_last_note_pkt[3] = last_pkt[3];
+        }
+    }
 
     if (shadow_midi_to_move_diag_enabled()) {
         static uint32_t diag_counter = 0;
@@ -2116,10 +2271,12 @@ static void shadow_drain_midi_to_move_queue(void)
 
         if (should_log) {
             unified_log("shim", LOG_LEVEL_DEBUG,
-                        "midi_to_move diag: pending=%u read=%u write=%u inj=%u dup_drop=%u full=%d slot=%d occ=%u",
-                        pending, read_idx, write_idx, injected, duplicate_drops,
+                        "midi_to_move diag: pending=%u read=%u write=%u inj=%u dup_drop=%u mb_dup=%u busy_drop=%u full=%d slot=%d occ=%u ext_mode=%d",
+                        pending, read_idx, write_idx, injected, duplicate_drops, mailbox_duplicate_drops,
+                        interleave_drops,
                         midi_in_full_this_cycle, last_insert_slot,
-                        shadow_midi_to_move_last_midi_in_occupancy);
+                        shadow_midi_to_move_last_midi_in_occupancy,
+                        shadow_external_inject_mode_enabled);
         }
     }
 }
@@ -3200,7 +3357,7 @@ int ioctl(int fd, unsigned long request, ...)
                 /* No file I/O here — fopen("/proc/self/statm") can block
                  * when the disk is busy, causing audio clicks. */
                 unified_log("shim", LOG_LEVEL_DEBUG,
-                    "Heartbeat: pid=%d overruns=%d display_mode=%d la_pkts=%u la_ch=%d la_stale=%u la_sub_pid=%d la_restarts=%d pin_chal=%d m2m_inj=%u m2m_drop=%u m2m_dup=%u m2m_full=%u m2m_last=%u m2m_slot=%d m2m_occ=%u at_poly=%u at_ch=%u",
+                    "Heartbeat: pid=%d overruns=%d display_mode=%d la_pkts=%u la_ch=%d la_stale=%u la_sub_pid=%d la_restarts=%d pin_chal=%d m2m_inj=%u m2m_drop=%u m2m_dup=%u m2m_mbdup=%u m2m_full=%u m2m_last=%u m2m_lastmbdup=%u m2m_slot=%d m2m_occ=%u ext_mode=%d at_poly=%u at_ch=%u",
                     getpid(), consecutive_overruns,
                     shadow_display_mode,
                     link_audio.packets_intercepted, link_audio.move_channel_count,
@@ -3209,10 +3366,13 @@ int ioctl(int fd, unsigned long request, ...)
                     shadow_midi_to_move_injected_count,
                     shadow_midi_to_move_dropped_count,
                     shadow_midi_to_move_duplicate_edge_dropped_count,
+                    shadow_midi_to_move_duplicate_mailbox_dropped_count,
                     shadow_midi_to_move_midi_in_full_count,
                     shadow_midi_to_move_last_cycle_injected,
+                    shadow_midi_to_move_last_cycle_mailbox_duplicates,
                     shadow_midi_to_move_last_insert_slot,
                     shadow_midi_to_move_last_midi_in_occupancy,
+                    shadow_external_inject_mode_enabled,
                     shadow_internal_poly_aftertouch_drop_count,
                     shadow_internal_chan_aftertouch_drop_count);
             }

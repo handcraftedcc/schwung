@@ -6,6 +6,9 @@
 /* Open and map /shadow_midi_to_move (lazy, idempotent). */
 int shadow_midi_to_move_open(void);
 
+/* Set/Clear queue mode flags (SHADOW_MIDI_TO_MOVE_MODE_* in shm header). */
+int shadow_midi_to_move_set_mode_flag(uint32_t flag, int enabled);
+
 /* Enqueue one USB-MIDI packet (4 bytes). Non-blocking. */
 int shadow_midi_to_move_send_usb_packet(uint8_t p0, uint8_t p1, uint8_t p2, uint8_t p3);
 
