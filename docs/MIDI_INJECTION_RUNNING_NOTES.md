@@ -171,3 +171,39 @@ Purpose: append-only notes for debugging `midi_to_move` injection stability in `
 ### Open questions
 - During repro, do `v2-midi` window counters show input note-edge continuity while `out_note` falls to zero?
 - If yes, is the loss concentrated in source-gate blocks (`blocked`) or MIDI FX zero-output (`fx_zero`) windows?
+
+## 2026-03-10 (internal drop deep-log correlation: superarp transport)
+
+### Evidence observed
+- Fresh repro capture after `d6c3a76` shows no injector pressure/failure signals:
+  - `debug.log`: no assertions, no `v2-midi blocked`, no non-zero `busy_drop/full/dup_drop/mb_dup`.
+  - shim diagnostics remain clean while intermittency is audible.
+- `midi_inject_test.log` in internal mode still shows periodic long note-edge gaps (~1.5-1.9s), despite continuous bursts between gaps.
+- New chain v2 counters in the same window show mostly non-note traffic (`last=src2 st=0xA0`), `in_clk=0`, and no source-gate blocks.
+- Critical new signal from `/data/UserData/move-anything/superarp.log`:
+  - repeated `MIDI Stop (internal)` events during active arp cycles
+  - immediate all-notes-off flushes on each stop
+  - frequent `MIDI Start (internal reset)` restarts afterwards
+- Active slot state used in repro (`set_state/.../slot_2.json`) confirms:
+  - synth `midi_inject_test`
+  - MIDI FX `superarp` with `sync: "internal"`
+  - chain input currently `"both"` (feedback traffic present in path)
+
+### Interpretation
+- The intermittent internal-mode drop is upstream of shim injection and likely tied to transport handling in `superarp` (or transport events reaching it), not mailbox occupancy/ordering.
+- Repeated internal transport-stop handling matches the observed playback interruption pattern.
+
+### Verification commands used
+- Device logs copied locally:
+  - `/tmp/midi_debug/debug.log`
+  - `/tmp/midi_debug/midi_inject_test.log`
+  - `/tmp/midi_debug/superarp.log`
+- Key checks:
+  - `grep -Eci 'ASSERT|assert|EventBuffer\\.hpp' /tmp/midi_debug/debug.log` => `0`
+  - `grep -c 'v2-midi blocked' /tmp/midi_debug/debug.log` => `0`
+  - `grep -Ec 'busy_drop=[1-9]|full=[1-9]|dup_drop=[1-9]|mb_dup=[1-9]' /tmp/midi_debug/debug.log` => `0`
+  - `grep -c 'MIDI Stop (internal)' /tmp/midi_debug/superarp.log` => `105` (historical file; multiple recent occurrences observed near repro window)
+
+### Open questions
+- Which exact MIDI status/source combination is triggering `MIDI Stop (internal)` in the superarp path during this setup?
+- Is this caused by internal transport forwarding, feedback path events when `input=both`, or superarp internal sync logic?
