@@ -75,3 +75,27 @@ Purpose: append-only notes for debugging `midi_to_move` injection stability in `
 - `Change implemented`
 - `Verification`
 - `Open questions`
+
+## 2026-03-10 (rollback of internal source-gate experiment)
+
+### Evidence observed
+- Internal mode regression reported after source-gating changes: `midi_inject_test` no longer forwarded expected internal MIDI stream while upstream arp still produced MIDI.
+- External path remained stable, but internal forwarding behavior was worse than pre-change baseline.
+
+### Change implemented
+- Reverted two commits on `MidiInTesting`:
+  - `d652cc1` (`chain: allow realtime clock through midi_inject_test gate`)
+  - `96edaff` (`chain: prefilter midi_inject_test source before midi fx`)
+- Revert commits:
+  - `adef0c8` Revert "chain: allow realtime clock through midi_inject_test gate"
+  - `e7be87c` Revert "chain: prefilter midi_inject_test source before midi fx"
+
+### Verification
+- Branch pushed with rollback state at `e7be87c`.
+- Built rollback artifact successfully (`move-anything.tar.gz`, MD5 `6f8832ac48ae185607c767082f00e0a2`).
+- Installed to device with:
+  - `./scripts/install.sh local --skip-confirmation --skip-modules`
+
+### Open questions
+- Why held-note continuity in internal mode intermittently stops even when source gate regressions are removed.
+- Whether intermittent stop aligns with clock/transport state transitions in arp path or with internal note lifecycle/state expiry.
