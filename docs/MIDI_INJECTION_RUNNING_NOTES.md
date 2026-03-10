@@ -379,3 +379,41 @@ Purpose: append-only notes for debugging `midi_to_move` injection stability in `
 - In this capture, SuperArp itself did not stall and did not receive transport stop/start resets.
 - `tick no-output` lines are expected between scheduled step boundaries; the observed cadence remained consistent.
 - This points away from a SuperArp step scheduler freeze as the primary cause of intermittent playback in this run.
+
+## 2026-03-10 (timestamp-correlated repro after SuperArp wall-clock log fix)
+
+### Evidence observed
+- Fresh repro capture (user held pads continuously; no deliberate burst input):
+  - `/tmp/midi_debug/repro_20260310_141720/debug.log`
+  - `/tmp/midi_debug/repro_20260310_141720/midi_inject_test.log`
+  - `/tmp/midi_debug/repro_20260310_141720/superarp.log`
+- No crash/transport/injector pressure signals in this run:
+  - `debug_asserts=0`
+  - `debug_rt_transport=0`
+  - `debug_rt_stop_probe=0`
+  - `debug_m2m_nonzero_drop=0` (`busy/full/dup/mb_dup` stayed zero)
+  - `debug_v2_blocked=0`, `debug_v2_fx_zero_nonzero=0`
+- `midi_inject_test` still showed recurring long note-edge gaps while in `source_mode=internal`:
+  - examples: `19:16:44.857 gap_ms=1591`, `19:17:04.763 gap_ms=1536`, `19:17:20.640 gap_ms=1518`
+- SuperArp log now includes wall-clock timestamps and shows matching long wall-time gaps between `run_step emit=1` entries, while sample-time remains one-step:
+  - wall-time examples: `19:16:44.880 run_step_gap_ms=1614`, `19:17:20.640 run_step_gap_ms=2609`
+  - same entries report `gap_samples=5504` (or occasional `5632`), i.e. normal per-step sample delta.
+- Chain v2 gap detector also fired repeatedly:
+  - `v2-midi gap tick-silent ... silent_ms~1000`
+  - summary windows were dominated by `last=src2 st=0xA0 ...` traffic in this repro.
+
+### Interpretation
+- Intermittency is still upstream of shim injection stability guards.
+- With `gap_samples` staying near one step while wall-clock gaps grow to ~1.5s+, the evidence indicates timing irregularity in when MIDI-FX tick work is being serviced in wall time (not a mailbox/order failure, and not transport-stop resets in this run).
+
+### Change implemented
+- Added a targeted chain debug probe in `src/modules/chain/dsp/chain_host.c` (`v2_tick_midi_fx`):
+  - logs `v2-midi tick-gap ... dt_ms=... frames=...` when consecutive MIDI-FX tick calls are separated by `>=200ms` wall time (debug-only path for `midi_inject_test` instrumentation flow).
+
+### Verification
+- `tests/shadow/test_midi_to_move_injection_stability.sh` PASS
+- `bash tests/host/test_chain_v2_midi_source_gate.sh` PASS
+
+### Open questions
+- Do the newly added `v2-midi tick-gap` events align exactly with the audible short-burst stall windows?
+- If yes, what upstream scheduler/render path is delaying `v2_tick_midi_fx` servicing in this internal-mode setup?

@@ -492,6 +492,7 @@ typedef struct chain_instance {
     uint32_t dbg_midi_zero_out_events;
     uint64_t dbg_midi_tick_silent_start_ms;
     uint64_t dbg_midi_tick_silent_last_log_ms;
+    uint64_t dbg_midi_tick_last_call_ms;
 } chain_instance_t;
 
 /* ============================================================================
@@ -1620,6 +1621,22 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
     int debug_enabled = v2_midi_debug_enabled(inst);
     uint64_t now_ms = debug_enabled ? get_time_ms() : 0;
     uint32_t tick_out_note_edges = 0;
+
+    if (debug_enabled) {
+        if (inst->dbg_midi_tick_last_call_ms > 0) {
+            uint64_t tick_dt_ms = now_ms - inst->dbg_midi_tick_last_call_ms;
+            if (tick_dt_ms >= 200) {
+                unified_log("chain", LOG_LEVEL_DEBUG,
+                            "v2-midi tick-gap synth=%s patch=%d midi_fx=%d dt_ms=%llu frames=%d",
+                            inst->current_synth_module,
+                            inst->current_patch,
+                            inst->midi_fx_count,
+                            (unsigned long long)tick_dt_ms,
+                            frames);
+            }
+        }
+        inst->dbg_midi_tick_last_call_ms = now_ms;
+    }
 
     for (int fx = 0; fx < inst->midi_fx_count; fx++) {
         midi_fx_api_v1_t *api = inst->midi_fx_plugins[fx];
