@@ -127,3 +127,24 @@ Purpose: append-only notes for debugging `midi_to_move` injection stability in `
 ### Open questions
 - Whether this resolves user-reported spotty internal continuity end-to-end on hardware.
 - If any external-mode regressions appear, whether duplicate-edge policy needs a time-windowed filter instead of mode gating.
+
+## 2026-03-10 (high-detail internal drop instrumentation)
+
+### Evidence observed
+- In a 150s clean capture after duplicate-edge gating, shim inject path remained healthy:
+  - sustained injections, no `dup_drop`, no `busy_drop`, no `full`.
+- Audible intermittency still reported while pads/arp were held.
+- `midi_inject_test` showed intermittent `drop reason=source src=2 mode=internal` events (notably `0xA0`, and in prior windows also `0x90/0x80/0xF8`).
+
+### Change implemented
+- Added targeted verbose diagnostics in `midi_inject_test`:
+  - In `source_mode=internal`, log every forwarded note edge (`0x90/0x80`) unsampled with source + note data.
+  - In `source_mode=internal`, log unsampled source-mismatch drops for note-edge and realtime clock statuses (`0xF8`) including `d1/d2`.
+- Kept sampled logging behavior for all other traffic to avoid excessive noise.
+
+### Verification
+- `tests/shadow/test_midi_to_move_injection_stability.sh` PASS
+- `bash tests/host/test_chain_v2_midi_source_gate.sh` PASS
+
+### Open questions
+- Whether source-tag mismatches (`src=2` while mode is internal) align exactly with audible gaps in the new verbose note-edge stream.

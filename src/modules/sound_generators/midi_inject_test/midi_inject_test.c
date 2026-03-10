@@ -122,6 +122,20 @@ static int should_log_sample(uint32_t count, uint32_t interval_mask)
     return (count <= 8u) || ((count & interval_mask) == 0u);
 }
 
+static int is_note_edge_status(uint8_t status, uint8_t d2)
+{
+    uint8_t type = (uint8_t)(status & 0xF0u);
+    if (type == 0x80u) return 1;
+    if (type == 0x90u) return 1;
+    (void)d2;
+    return 0;
+}
+
+static int is_realtime_clock_status(uint8_t status)
+{
+    return status == 0xF8u;
+}
+
 static uint64_t now_mono_ms(void)
 {
     struct timespec ts;
@@ -245,7 +259,8 @@ static int status_to_cin_and_len(uint8_t status, uint8_t *cin_out, int *len_out)
 }
 
 static int send_forwarded_message(midi_inject_test_instance_t *inst,
-                                  uint8_t cin, uint8_t status, uint8_t d1, uint8_t d2)
+                                  uint8_t cin, uint8_t status, uint8_t d1, uint8_t d2,
+                                  int source)
 {
     if (!inst) return 0;
 
@@ -253,6 +268,11 @@ static int send_forwarded_message(midi_inject_test_instance_t *inst,
     if (shadow_midi_to_move_send_usb_packet(cin, final_status, d1, d2)) {
         inst->forwarded_packets++;
         remember_emitted_event(inst, final_status, d1, d2);
+        if (source_mode_is_internal_only(inst->source_mode) &&
+            is_note_edge_status(final_status, d2)) {
+            midi_inject_logf("tx note-edge src=%d status=0x%02X d1=%u d2=%u fwd_total=%u",
+                             source, final_status, d1, d2, inst->forwarded_packets);
+        }
         if (should_log_sample(inst->forwarded_packets, 0x3Fu)) {
             midi_inject_logf("tx usb0=0x%02X status=0x%02X d1=%u d2=%u fwd_total=%u",
                              cin, final_status, d1, d2, inst->forwarded_packets);
@@ -425,9 +445,17 @@ static void on_midi(void *instance, const uint8_t *msg, int len, int source)
     inst->last_status = msg[0];
     inst->last_source = (uint8_t)source;
 
+    uint8_t in_d1 = (len > 1) ? msg[1] : 0;
+    uint8_t in_d2 = (len > 2) ? msg[2] : 0;
+
     if (!source_is_allowed(inst, source)) {
         inst->dropped_source++;
-        if (should_log_sample(inst->dropped_source, 0x3Fu)) {
+        if (source_mode_is_internal_only(inst->source_mode) &&
+            (is_note_edge_status(msg[0], in_d2) || is_realtime_clock_status(msg[0]))) {
+            midi_inject_logf("drop reason=source src=%d mode=%s status=0x%02X d1=%u d2=%u dropped_source=%u",
+                             source, source_mode_to_string(inst->source_mode), msg[0],
+                             in_d1, in_d2, inst->dropped_source);
+        } else if (should_log_sample(inst->dropped_source, 0x3Fu)) {
             midi_inject_logf("drop reason=source src=%d mode=%s status=0x%02X dropped_source=%u",
                              source, source_mode_to_string(inst->source_mode), msg[0], inst->dropped_source);
         }
@@ -468,8 +496,8 @@ static void on_midi(void *instance, const uint8_t *msg, int len, int source)
         return;
     }
 
-    uint8_t d1 = (len > 1) ? msg[1] : 0;
-    uint8_t d2 = (len > 2) ? msg[2] : 0;
+    uint8_t d1 = in_d1;
+    uint8_t d2 = in_d2;
     if (expected_len == 2) d2 = 0;
 
     if (source == MOVE_MIDI_SOURCE_EXTERNAL && is_recent_self_echo(inst, status, d1, d2)) {
@@ -481,7 +509,7 @@ static void on_midi(void *instance, const uint8_t *msg, int len, int source)
         return;
     }
 
-    send_forwarded_message(inst, cin, status, d1, d2);
+    send_forwarded_message(inst, cin, status, d1, d2, source);
 }
 
 static plugin_api_v2_t g_api = {
