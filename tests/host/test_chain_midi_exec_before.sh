@@ -17,9 +17,17 @@ if ! rg -n "json_get_string\(json, \"midi_exec\"" "$file" >/dev/null 2>&1; then
   echo "FAIL: Patch parser must read midi_exec field" >&2
   exit 1
 fi
+if ! rg -n "before-external" "$file" >/dev/null 2>&1; then
+  echo "FAIL: chain host must support midi_exec=before-external mode" >&2
+  exit 1
+fi
 
 if ! rg -n "inst->midi_exec_before =" "$file" >/dev/null 2>&1; then
   echo "FAIL: Patch load must apply midi_exec_before to instance state" >&2
+  exit 1
+fi
+if ! rg -n "midi_exec_mode_to_string" "$file" >/dev/null 2>&1; then
+  echo "FAIL: chain host must stringify midi_exec mode for get_param responses" >&2
   exit 1
 fi
 

@@ -682,7 +682,7 @@ const SLOT_SETTINGS = [
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
     { key: "slot:muted", label: "Muted", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
-    { key: "slot:midi_exec", label: "Midi Exec", type: "int", min: 0, max: 1, step: 1 },
+    { key: "slot:midi_exec", label: "Midi Exec", type: "int", min: 0, max: 2, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },  // -2 = passthrough, -1 = auto, 0-15 = ch 1-16
 ];
@@ -995,7 +995,7 @@ const CHAIN_SETTINGS_ITEMS = [
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
     { key: "slot:muted", label: "Muted", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
-    { key: "slot:midi_exec", label: "Midi Exec", type: "int", min: 0, max: 1, step: 1 },
+    { key: "slot:midi_exec", label: "Midi Exec", type: "int", min: 0, max: 2, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },  // -2 = passthrough, -1 = auto, 0-15 = ch 1-16
     { key: "save", label: "[Save]", type: "action" },  // Save slot preset (overwrite for existing)
@@ -2114,12 +2114,24 @@ function loadMasterFxFromConfig() {
     };
 }
 
+function midiExecModeToString(mode) {
+    if (mode === 2) return "before-external";
+    if (mode === 1) return "before";
+    return "after";
+}
+
+function midiExecModeLabel(mode) {
+    if (mode === 2) return "Before-External";
+    if (mode === 1) return "Before";
+    return "After";
+}
+
 function saveSlotsToConfig(nextSlots) {
     const payload = {
         patches: nextSlots.map((slot, idx) => ({
             name: slot.name,
             channel: slot.channel,
-            midi_exec: parseInt(getSlotParam(idx, "slot:midi_exec") || "0") ? "before" : "after",
+            midi_exec: midiExecModeToString(parseInt(getSlotParam(idx, "slot:midi_exec") || "0")),
             forward_channel: parseInt(getSlotParam(idx, "slot:forward_channel") || "-1")
         })),
         master_fx: currentMasterFxId || ""
@@ -2138,7 +2150,7 @@ function saveConfigMasterFx() {
         patches: data && Array.isArray(data.patches) ? data.patches : slots.map((slot, idx) => ({
             name: slot.name,
             channel: slot.channel,
-            midi_exec: parseInt(getSlotParam(idx, "slot:midi_exec") || "0") ? "before" : "after",
+            midi_exec: midiExecModeToString(parseInt(getSlotParam(idx, "slot:midi_exec") || "0")),
             forward_channel: parseInt(getSlotParam(idx, "slot:forward_channel") || "-1")
         })),
         master_fx: currentMasterFxId || "",
@@ -2461,7 +2473,7 @@ function buildSlotPatchJson(slotIndex, name) {
     const midiExec = getSlotParam(slotIndex, "slot:midi_exec");
     if (recvCh !== null) patch.receive_channel = parseInt(recvCh);
     if (fwdCh !== null) patch.forward_channel = parseInt(fwdCh);
-    if (midiExec !== null) patch.midi_exec = parseInt(midiExec) ? "before" : "after";
+    if (midiExec !== null) patch.midi_exec = midiExecModeToString(parseInt(midiExec));
 
     /* Include knob mappings */
     const knobMappingsJson = getSlotParam(slotIndex, "knob_mappings");
@@ -4063,7 +4075,7 @@ function getChainSettingValue(slot, setting) {
         return parseInt(val) ? "Yes" : "No";
     }
     if (setting.key === "slot:midi_exec") {
-        return parseInt(val) ? "Before" : "After";
+        return midiExecModeLabel(parseInt(val));
     }
     if (setting.key === "slot:forward_channel") {
         const ch = parseInt(val);
@@ -5503,7 +5515,7 @@ function getSlotSettingValue(slot, setting) {
         return parseInt(val) ? "Yes" : "No";
     }
     if (setting.key === "slot:midi_exec") {
-        return parseInt(val) ? "Before" : "After";
+        return midiExecModeLabel(parseInt(val));
     }
     if (setting.key === "slot:forward_channel") {
         const ch = parseInt(val);

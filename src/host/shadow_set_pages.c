@@ -57,6 +57,25 @@ void set_pages_init(const set_pages_host_t *h) {
     host = *h;
 }
 
+static int parse_midi_exec_mode(const char *val) {
+    if (!val || !val[0]) return 0;
+    if (strncmp(val, "before-external", 15) == 0) return 2;
+    if (strncmp(val, "before", 6) == 0) return 1;
+    if (strncmp(val, "after", 5) == 0) return 0;
+    {
+        int n = atoi(val);
+        if (n <= 0) return 0;
+        if (n == 1) return 1;
+        return 2;
+    }
+}
+
+static const char *midi_exec_mode_string(int mode) {
+    if (mode == 2) return "before-external";
+    if (mode == 1) return "before";
+    return "after";
+}
+
 /* ============================================================================
  * Utility functions
  * ============================================================================ */
@@ -185,7 +204,7 @@ void shadow_save_config_to_dir(const char *dir) {
         int display_fwd = host.chain_slots[i].forward_channel >= 0
             ? host.chain_slots[i].forward_channel + 1
             : host.chain_slots[i].forward_channel;
-        const char *midi_exec = host.chain_slots[i].midi_exec_before ? "before" : "after";
+        const char *midi_exec = midi_exec_mode_string(host.chain_slots[i].midi_exec_before);
         fprintf(f, "    {\"name\": \"%s\", \"channel\": %d, \"volume\": %.3f, \"midi_exec\": \"%s\", \"forward_channel\": %d, \"muted\": %d, \"soloed\": %d}%s\n",
                 host.chain_slots[i].patch_name, display_ch,
                 host.chain_slots[i].volume, midi_exec, display_fwd,
@@ -262,11 +281,7 @@ int shadow_load_config_from_dir(const char *dir) {
             if (midi_exec_colon) {
                 midi_exec_colon++;
                 while (*midi_exec_colon == ' ' || *midi_exec_colon == '"') midi_exec_colon++;
-                if (strncmp(midi_exec_colon, "before", 6) == 0 || *midi_exec_colon == '1') {
-                    host.chain_slots[i].midi_exec_before = 1;
-                } else {
-                    host.chain_slots[i].midi_exec_before = 0;
-                }
+                host.chain_slots[i].midi_exec_before = parse_midi_exec_mode(midi_exec_colon);
             }
         }
         char *fwd_pos = strstr(name_pos, "\"forward_channel\"");

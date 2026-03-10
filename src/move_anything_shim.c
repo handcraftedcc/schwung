@@ -2023,7 +2023,7 @@ static void shadow_route_midi_exec_before_from_midi_in(uint8_t *midi_in)
         if (cable != 0x00) continue;
         if (cin != 0x08 && cin != 0x09) continue;
         if (type != 0x80 && type != 0x90) continue;
-        /* Midi Exec=Before only replaces main 4x8 pad grid notes. */
+        /* Midi Exec before-modes only replace main 4x8 pad grid notes. */
         if (p2 < 68 || p2 > 99) continue;
 
         int dispatched = 0;
@@ -2054,6 +2054,33 @@ static int shadow_midi_exec_before_active(void)
         }
     }
     return 0;
+}
+
+static uint8_t shadow_midi_exec_before_select_cable(uint8_t status)
+{
+    int midi_ch = (int)(status & 0x0Fu);
+    int saw_before_internal = 0;
+    int saw_before_external = 0;
+
+    for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+        shadow_chain_slot_t *slot = &shadow_chain_slots[s];
+        if (!slot->active || !slot->instance || !slot->midi_exec_before) continue;
+        if (slot->channel != -1 && slot->channel != midi_ch) continue;
+        if (slot->midi_exec_before >= 2) saw_before_external = 1;
+        else saw_before_internal = 1;
+    }
+
+    if (saw_before_external) return 2u;
+    if (saw_before_internal) return 0u;
+
+    for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+        shadow_chain_slot_t *slot = &shadow_chain_slots[s];
+        if (!slot->active || !slot->instance || !slot->midi_exec_before) continue;
+        if (slot->midi_exec_before >= 2) return 2u;
+        return 0u;
+    }
+
+    return 2u;
 }
 
 static int shadow_midi_in_contains_packet(const uint8_t *midi_in, const uint8_t pkt[4])
@@ -2334,11 +2361,11 @@ static void shadow_drain_midi_to_move_queue(void)
             (shadow_internal_inject_mode_enabled && !shadow_external_inject_mode_enabled);
 
         /* Default reinjection cable is 2 (external). In internal-only
-         * Midi Exec=Before mode, replace raw cable-0 note flow by reinjecting
-         * transformed notes on cable 0. */
+         * Midi Exec before-modes, select target cable from slot mode:
+         * before -> cable 0 (replace), before-external -> cable 2 (reroute). */
         uint8_t forced_cable = 2u;
         if (internal_only_mode && shadow_midi_exec_before_active()) {
-            forced_cable = 0u;
+            forced_cable = shadow_midi_exec_before_select_cable(pkt[1]);
         }
 
         /* Preserve CIN in low nibble while forcing target cable. */
