@@ -2315,8 +2315,19 @@ static void shadow_drain_midi_to_move_queue(void)
             continue;
         }
 
-        /* Force USB cable 2 while preserving CIN in low nibble. */
-        pkt[0] = (uint8_t)((2u << 4) | (pkt[0] & 0x0Fu));
+        int internal_only_mode =
+            (shadow_internal_inject_mode_enabled && !shadow_external_inject_mode_enabled);
+
+        /* Default reinjection cable is 2 (external). In internal-only
+         * Midi Exec=Before mode, replace raw cable-0 note flow by reinjecting
+         * transformed notes on cable 0. */
+        uint8_t forced_cable = 2u;
+        if (internal_only_mode && shadow_midi_exec_before_active()) {
+            forced_cable = 0u;
+        }
+
+        /* Preserve CIN in low nibble while forcing target cable. */
+        pkt[0] = (uint8_t)((forced_cable << 4) | (pkt[0] & 0x0Fu));
 
         if (shadow_inject_guard_mode_enabled() &&
             shadow_midi_in_contains_packet(global_mmap_addr + MIDI_IN_OFFSET, pkt)) {
@@ -2327,8 +2338,6 @@ static void shadow_drain_midi_to_move_queue(void)
             continue;
         }
 
-        int internal_only_mode =
-            (shadow_internal_inject_mode_enabled && !shadow_external_inject_mode_enabled);
         if (!internal_only_mode && shadow_midi_to_move_is_duplicate_edge(pkt)) {
             shadow_midi_to_move_dropped_count++;
             duplicate_drops++;

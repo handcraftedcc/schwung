@@ -343,6 +343,25 @@ Purpose: append-only notes for debugging `midi_to_move` injection stability in `
   - `./scripts/build.sh`
   - `./scripts/install.sh local --skip-confirmation --skip-modules`
 
+## 2026-03-10 (midi exec before cable-0 replacement experiment)
+
+### Requested behavior
+- For `Midi Exec=Before` internal-only flow: consume raw note input on cable 0, run MIDI FX, then replace cable 0 with transformed output (instead of reinjecting on cable 2).
+
+### Change implemented
+- In shim queue drain (`shadow_drain_midi_to_move_queue`), reinjection cable selection is now mode-aware:
+  - default remains cable 2
+  - when `internal_only_mode` and `shadow_midi_exec_before_active()` are true, forced cable is set to 0
+- Raw cable-0 note event zeroing from `shadow_route_midi_exec_before_from_midi_in` remains in place, so transformed stream replaces the original.
+
+### Verification
+- `tests/shadow/test_midi_to_move_injection_stability.sh` PASS (extended to assert forced-cable selection and cable-0 path for internal-only before mode)
+- `tests/host/test_chain_midi_exec_before.sh` PASS
+- `tests/shadow/test_shadow_midi_exec_before_wiring.sh` PASS
+- Built and installed:
+  - `./scripts/build.sh`
+  - `./scripts/install.sh local --skip-confirmation --skip-modules`
+
 ### Expected effect
 - In `midi_inject_test` internal mode, SuperArp should no longer see external feedback packets.
 - This should remove source-path contamination and make internal-mode behavior consistent with user intent.
