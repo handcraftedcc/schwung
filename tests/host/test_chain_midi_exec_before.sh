@@ -51,4 +51,22 @@ if ! echo "$ctx" | rg -q "midi_send_external"; then
   exit 1
 fi
 
+tick_start=$(rg -n "static void v2_tick_midi_fx\(chain_instance_t \*inst, int frames\)" "$file" | head -n 1 | cut -d: -f1 || true)
+tick_end=$(rg -n "^/\* Simple JSON string extraction" "$file" | head -n 1 | cut -d: -f1 || true)
+if [ -z "${tick_start}" ] || [ -z "${tick_end}" ]; then
+  echo "FAIL: could not locate v2_tick_midi_fx boundaries in ${file}" >&2
+  exit 1
+fi
+tick_ctx=$(sed -n "${tick_start},${tick_end}p" "$file")
+
+if ! echo "$tick_ctx" | rg -q "inst->midi_exec_before"; then
+  echo "FAIL: v2_tick_midi_fx missing midi_exec_before branch for scheduled MIDI FX output" >&2
+  exit 1
+fi
+
+if ! echo "$tick_ctx" | rg -q "midi_send_external"; then
+  echo "FAIL: v2_tick_midi_fx must forward before-mode scheduled note output to host external path" >&2
+  exit 1
+fi
+
 echo "PASS: chain midi_exec before-mode wiring present"

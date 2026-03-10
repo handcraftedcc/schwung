@@ -642,6 +642,7 @@ static chain_param_info_t *find_param_by_key(chain_instance_t *inst, const char 
 static float dsp_value_to_float(const char *val_str, chain_param_info_t *pinfo, float fallback);
 static void v2_chain_log(chain_instance_t *inst, const char *msg);  /* Forward declaration */
 static void parse_debug_log(const char *msg);  /* Forward declaration */
+static uint8_t usb_cin_from_status_len(uint8_t status, int len);  /* Forward declaration */
 
 /* Plugin API we return to host */
 static plugin_api_v1_t g_plugin_api;
@@ -1679,6 +1680,22 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
                     tick_out_note_edges++;
                     inst->dbg_midi_last_out_note_ms = now_ms;
                 }
+            }
+            if (inst->midi_exec_before) {
+                if (inst->host && inst->host->midi_send_external) {
+                    uint8_t status = out_msgs[i][0];
+                    uint8_t type = status & 0xF0u;
+                    if (type == 0x80u || type == 0x90u) {
+                        uint8_t usb_msg[4] = {
+                            usb_cin_from_status_len(status, out_lens[i]),
+                            status,
+                            (out_lens[i] > 1) ? out_msgs[i][1] : 0,
+                            (out_lens[i] > 2) ? out_msgs[i][2] : 0
+                        };
+                        inst->host->midi_send_external(usb_msg, 4);
+                    }
+                }
+                continue;
             }
             if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
                 inst->synth_plugin_v2->on_midi(inst->synth_instance, out_msgs[i], out_lens[i], 0);
