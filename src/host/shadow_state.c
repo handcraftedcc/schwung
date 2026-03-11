@@ -200,10 +200,10 @@ void shadow_save_state(void)
             host_chain_slots[2].forward_channel,
             host_chain_slots[3].forward_channel);
     fprintf(f, "  \"slot_midi_exec\": [%d, %d, %d, %d],\n",
-            host_chain_slots[0].midi_exec_before,
-            host_chain_slots[1].midi_exec_before,
-            host_chain_slots[2].midi_exec_before,
-            host_chain_slots[3].midi_exec_before);
+            host_chain_slots[0].midi_exec_before ? 1 : 0,
+            host_chain_slots[1].midi_exec_before ? 1 : 0,
+            host_chain_slots[2].midi_exec_before ? 1 : 0,
+            host_chain_slots[3].midi_exec_before ? 1 : 0);
     fprintf(f, "  \"slot_muted\": [%d, %d, %d, %d],\n",
             host_chain_slots[0].muted,
             host_chain_slots[1].muted,
@@ -308,14 +308,10 @@ void shadow_load_state(void)
         if (midi_exec_pos) {
             int m0, m1, m2, m3;
             if (sscanf(midi_exec_pos, "[%d, %d, %d, %d]", &m0, &m1, &m2, &m3) == 4) {
-                if (m0 < 0) m0 = 0; if (m0 > 2) m0 = 2;
-                if (m1 < 0) m1 = 0; if (m1 > 2) m1 = 2;
-                if (m2 < 0) m2 = 0; if (m2 > 2) m2 = 2;
-                if (m3 < 0) m3 = 0; if (m3 > 2) m3 = 2;
-                host_chain_slots[0].midi_exec_before = m0;
-                host_chain_slots[1].midi_exec_before = m1;
-                host_chain_slots[2].midi_exec_before = m2;
-                host_chain_slots[3].midi_exec_before = m3;
+                host_chain_slots[0].midi_exec_before = m0 ? 1 : 0;
+                host_chain_slots[1].midi_exec_before = m1 ? 1 : 0;
+                host_chain_slots[2].midi_exec_before = m2 ? 1 : 0;
+                host_chain_slots[3].midi_exec_before = m3 ? 1 : 0;
 
                 char msg[128];
                 snprintf(msg, sizeof(msg), "Loaded slot midi_exec: [%d, %d, %d, %d]",

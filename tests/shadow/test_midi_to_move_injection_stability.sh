@@ -89,10 +89,8 @@ if ! echo "$dup_ctx" | rg -q "internal_only_mode"; then
   exit 1
 fi
 
-# Midi Exec before-modes should explicitly select reinjection cable in
-# internal-only mode:
-# - before -> cable 0 (replace raw cable-0 path)
-# - before-external -> cable 2 (reroute to external path)
+# Midi Exec=Before internal-only path should reinject on cable 0 (replace raw
+# cable-0 path) rather than cable 2.
 cable_ctx=$(sed -n '/Default reinjection cable/,/pkt\[0\] =/p' "$shim")
 if ! echo "$cable_ctx" | rg -q "forced_cable"; then
   echo "FAIL: Missing explicit forced cable selection for reinjection packets" >&2
@@ -106,17 +104,8 @@ if ! echo "$cable_ctx" | rg -q "shadow_midi_exec_before_active"; then
   echo "FAIL: Forced cable selection must check active Midi Exec=Before slots" >&2
   exit 1
 fi
-if ! echo "$cable_ctx" | rg -q "shadow_midi_exec_before_select_cable"; then
-  echo "FAIL: Internal-only before modes must use slot-aware cable selector" >&2
-  exit 1
-fi
-selector_ctx=$(sed -n '/static uint8_t shadow_midi_exec_before_select_cable/,/^}/p' "$shim")
-if ! echo "$selector_ctx" | rg -q "return 0u"; then
-  echo "FAIL: Cable selector must support standard before mode via cable 0" >&2
-  exit 1
-fi
-if ! echo "$selector_ctx" | rg -q "return 2u"; then
-  echo "FAIL: Cable selector must support before-external mode via cable 2" >&2
+if ! echo "$cable_ctx" | rg -q "forced_cable = 0u"; then
+  echo "FAIL: Internal-only Midi Exec=Before reinjection should route to cable 0" >&2
   exit 1
 fi
 

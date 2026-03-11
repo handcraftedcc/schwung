@@ -22,14 +22,6 @@ if ! rg -n "slot:midi_exec" "$ui" >/dev/null 2>&1; then
   echo "FAIL: shadow UI chain settings missing slot:midi_exec control" >&2
   exit 1
 fi
-if ! rg -n "slot:midi_exec.*max: 2" "$ui" >/dev/null 2>&1; then
-  echo "FAIL: shadow UI midi_exec control must support mode 0/1/2 (after/before/before-external)" >&2
-  exit 1
-fi
-if ! rg -n "before-external" "$ui" >/dev/null 2>&1; then
-  echo "FAIL: shadow UI must serialize/display before-external midi_exec mode" >&2
-  exit 1
-fi
 
 if ! rg -n "Midi Exec" "$ui" >/dev/null 2>&1; then
   echo "FAIL: shadow UI must label chain setting as Midi Exec" >&2
@@ -40,17 +32,9 @@ if ! rg -n "slot:midi_exec" "$mgmt" >/dev/null 2>&1; then
   echo "FAIL: shadow chain mgmt missing slot:midi_exec param set/get handling" >&2
   exit 1
 fi
-if ! rg -n "before-external" "$mgmt" >/dev/null 2>&1; then
-  echo "FAIL: shadow chain mgmt must parse/emit before-external midi_exec mode" >&2
-  exit 1
-fi
 
 if ! rg -n "midi_exec" "$set_pages" >/dev/null 2>&1; then
   echo "FAIL: set-page config save/load must persist midi_exec" >&2
-  exit 1
-fi
-if ! rg -n "before-external" "$set_pages" >/dev/null 2>&1; then
-  echo "FAIL: set-page config must preserve before-external midi_exec mode" >&2
   exit 1
 fi
 

@@ -58,25 +58,6 @@ static int shadow_chain_host_midi_send_external(const uint8_t *msg, int len) {
     return host.midi_send_external(msg, len);
 }
 
-static int shadow_parse_midi_exec_mode(const char *val) {
-    if (!val || !val[0]) return 0;
-    if (strncmp(val, "before-external", 15) == 0) return 2;
-    if (strncmp(val, "before", 6) == 0) return 1;
-    if (strncmp(val, "after", 5) == 0) return 0;
-    {
-        int n = atoi(val);
-        if (n <= 0) return 0;
-        if (n == 1) return 1;
-        return 2;
-    }
-}
-
-static const char *shadow_midi_exec_mode_string(int mode) {
-    if (mode == 2) return "before-external";
-    if (mode == 1) return "before";
-    return "after";
-}
-
 /* UI request tracking */
 static uint32_t shadow_ui_request_seen = 0;
 
@@ -471,8 +452,11 @@ void shadow_chain_load_config(void) {
             if (midi_exec_colon) {
                 midi_exec_colon++;
                 while (*midi_exec_colon == ' ' || *midi_exec_colon == '"') midi_exec_colon++;
-                shadow_chain_slots[i].midi_exec_before =
-                    shadow_parse_midi_exec_mode(midi_exec_colon);
+                if (strncmp(midi_exec_colon, "before", 6) == 0 || *midi_exec_colon == '1') {
+                    shadow_chain_slots[i].midi_exec_before = 1;
+                } else {
+                    shadow_chain_slots[i].midi_exec_before = 0;
+                }
             }
         }
 
@@ -1019,7 +1003,7 @@ int shadow_inprocess_load_chain(void) {
                         "patch:midi_exec", ch_buf, sizeof(ch_buf));
                     if (len > 0) {
                         ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
-                        shadow_chain_slots[i].midi_exec_before = shadow_parse_midi_exec_mode(ch_buf);
+                        shadow_chain_slots[i].midi_exec_before = (strncmp(ch_buf, "before", 6) == 0 || atoi(ch_buf) != 0) ? 1 : 0;
                     }
                 }
                 {
@@ -1084,7 +1068,7 @@ int shadow_inprocess_load_chain(void) {
                     "patch:midi_exec", ch_buf, sizeof(ch_buf));
                 if (len > 0) {
                     ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
-                    shadow_chain_slots[i].midi_exec_before = shadow_parse_midi_exec_mode(ch_buf);
+                    shadow_chain_slots[i].midi_exec_before = (strncmp(ch_buf, "before", 6) == 0 || atoi(ch_buf) != 0) ? 1 : 0;
                 }
             }
         } else {
@@ -1420,7 +1404,7 @@ void shadow_inprocess_handle_ui_request(void) {
             "patch:midi_exec", ch_buf, sizeof(ch_buf));
         if (len > 0) {
             ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
-            shadow_chain_slots[slot].midi_exec_before = shadow_parse_midi_exec_mode(ch_buf);
+            shadow_chain_slots[slot].midi_exec_before = (strncmp(ch_buf, "before", 6) == 0 || atoi(ch_buf) != 0) ? 1 : 0;
         }
     }
 
@@ -1479,13 +1463,11 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
         return 1;
     }
     if (strcmp(key, "slot:midi_exec") == 0) {
-        int mode = atoi(value);
-        if (mode < 0) mode = 0;
-        if (mode > 2) mode = 2;
-        shadow_chain_slots[slot].midi_exec_before = mode;
+        int before = atoi(value) ? 1 : 0;
+        shadow_chain_slots[slot].midi_exec_before = before;
         if (shadow_plugin_v2 && shadow_plugin_v2->set_param && shadow_chain_slots[slot].instance) {
             shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
-                "patch:midi_exec", shadow_midi_exec_mode_string(mode));
+                "patch:midi_exec", before ? "before" : "after");
         }
         shadow_ui_state_update_slot(slot);
         return 1;
@@ -1511,7 +1493,7 @@ int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_l
         return snprintf(buf, buf_len, "%d", (ch < 0) ? 0 : ch + 1);
     }
     if (strcmp(key, "slot:midi_exec") == 0) {
-        return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].midi_exec_before);
+        return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].midi_exec_before ? 1 : 0);
     }
     return -1;
 }
