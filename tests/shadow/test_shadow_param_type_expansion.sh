@@ -34,6 +34,21 @@ if ! rg -F -q "bars-every" "$shadow_file"; then
   exit 1
 fi
 
+if ! rg -F -q "pushRate(\"1 bar\")" "$shadow_file"; then
+  echo "FAIL: rate type should emit '1 bar' when bars are enabled" >&2
+  exit 1
+fi
+
+if rg -F -q "pushRate(\"1/1\")" "$shadow_file"; then
+  echo "FAIL: rate type should not emit '1/1' as a base division" >&2
+  exit 1
+fi
+
+if ! rg -F -q "const RATE_BASE_DENOMS = [2, 4, 8, 16, 32, 64];" "$shadow_file"; then
+  echo "FAIL: rate base denominators should start at 1/2 (not 1/1)" >&2
+  exit 1
+fi
+
 if rg -F -q "include_even" "$shadow_file"; then
   echo "FAIL: legacy include_even support should be removed from rate type" >&2
   exit 1
@@ -101,6 +116,11 @@ fi
 
 if rg -F -q "include_odd" "$docs_file"; then
   echo "FAIL: docs/MODULES.md should not mention include_odd for rate type" >&2
+  exit 1
+fi
+
+if ! rg -F -q "1 bar, 1/1T, 1/2, 1/2T, 1/4" "$docs_file"; then
+  echo "FAIL: docs/MODULES.md should describe 1 bar replacing 1/1 in rate ordering" >&2
   exit 1
 fi
 

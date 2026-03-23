@@ -632,7 +632,7 @@ Each entry in `params` is either:
 - Legacy aliases are still accepted: `pow2` -> `bars-simple`, `all` -> `bars-every`
 
 Rate options are emitted from slowest to fastest timing, for example:
-`16 bars, ... 2 bars, 1/1, 1/1T, 1/2, 1/2T, 1/4, ...`
+`16 bars, ... 2 bars, 1 bar, 1/1T, 1/2, 1/2T, 1/4, ...`
 
 `visible_if` can be attached to level entries and param entries:
 

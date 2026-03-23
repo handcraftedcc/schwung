@@ -1453,7 +1453,7 @@ const FILEPATH_BROWSER_FS = {
 };
 
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-const RATE_BASE_DENOMS = [1, 2, 4, 8, 16, 32, 64];
+const RATE_BASE_DENOMS = [2, 4, 8, 16, 32, 64];
 const RATE_TRIPLET_BASE_DENOMS = [1, 2, 4, 8, 16, 32];
 const RATE_BARS_SIMPLE = [16, 8, 4, 2, 1];
 const RATE_BARS_EVERY = [...Array(16)].map((_, i) => 16 - i);
@@ -1539,10 +1539,14 @@ function buildRateParamMeta(meta) {
     if (includeBars) {
         const bars = barsMode === "bars-every" ? RATE_BARS_EVERY : RATE_BARS_SIMPLE;
         for (const count of bars) {
-            /* 1 bar maps to 1/1 so rates stay in one canonical ordering. */
-            if (count <= 1) pushRate("1/1");
+            /* 1 bar only appears from bar options, not base rate divisions. */
+            if (count <= 1) pushRate("1 bar");
             else pushRate(`${count} bars`);
         }
+    }
+
+    if (includeTriplets && RATE_TRIPLET_BASE_DENOMS.indexOf(1) >= 0) {
+        pushRate("1/1T");
     }
 
     for (const denom of RATE_BASE_DENOMS) {
