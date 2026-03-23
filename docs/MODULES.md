@@ -601,6 +601,7 @@ Modules expose a navigable parameter hierarchy to the Shadow UI via `ui_hierarch
 | `list_param` / `count_param` / `name_param` | For preset browser levels |
 | `items_param` / `select_param` | For dynamic item selection levels |
 | `child_prefix` / `child_count` / `child_label` | For repeated elements (see below) |
+| `visible_if` | Optional conditional visibility rule for this level |
 
 ### Parameter Item Types
 
@@ -619,6 +620,28 @@ Each entry in `params` is either:
 | `float` | `min`, `max`, `step` | Float value (0.0-1.0 typical) |
 | `enum` | `options` | List of string options |
 | `mode` | `options` | Mode selector (like enum, triggers mode switch) |
+| `note` | `mode`, `min_note`, `max_note` | Generated note selector (`single` uses note names only, `multi` includes octaves) |
+| `rate` | `include_bars`, `bars_mode`, `include_triplets`, `include_even`, `include_odd` | Generated musical rate list (divisions, triplets, bars) |
+| `wav_position` | `display_unit`, `mode`, `filepath_param`, `min`, `max`, `step` | Numeric position/trim param with waveform preview and marker |
+| `string` | none (or `default`/`value`) | Opens on-screen text entry keyboard on edit |
+| `canvas` | `display_value_type`, `trigger_value` | Trigger-style parameter with configurable idle value formatting |
+
+`visible_if` can be attached to level entries and param entries:
+
+```json
+{
+  "param": "sync",
+  "equals": true
+}
+```
+
+Supported condition fields:
+- `equals`, `not_equals`
+- `gt`/`greater_than`/`greater`
+- `lt`/`smaller_than`/`smaller`
+- `truthy`, `falsey`/`falsy`
+
+Visibility is evaluated dynamically; hidden entries are removed from list navigation and knob mappings for that level.
 
 ### Child Selectors (for repeated elements)
 
@@ -725,6 +748,11 @@ int get_param(void *instance, const char *key, char *buf, int buf_len) {
 | `filepath` | `root`, `start_path`, `filter`, `default`/`value` | Opens Shadow UI file browser and stores selected path |
 | `module_picker` | `allow_none`, `allow_self`, `allowed_targets`, `param_key` | Dynamic enum from loaded chain components |
 | `parameter_picker` | `target_key`, `numeric_only`, `allow_none` | Dynamic enum from selected target's exposed params |
+| `note` | `mode`, `min_note`, `max_note` | Auto-generated note enum (centralized note naming in Shadow UI) |
+| `rate` | `include_bars`, `bars_mode`, `include_triplets`, `include_even`, `include_odd` | Auto-generated musical time-division enum |
+| `wav_position` | `display_unit`, `mode`, `filepath_param`, `min`, `max`, `step` | Position/trim control with waveform preview |
+| `string` | `default`/`value` | Text value edited through on-screen keyboard |
+| `canvas` | `display_value_type`, `trigger_value`, `default`/`value` | Trigger-style parameter for custom canvas workflows |
 
 #### `filepath` in module.json
 
@@ -785,6 +813,45 @@ Use `module_picker` and `parameter_picker` for chain-aware target routing withou
 - `numeric_only` (parameter_picker, optional, default true): Restricts options to float/int parameters.
 
 These map to knobs 1-8 in the Shadow UI for quick access.
+
+#### Additional Type Examples
+
+```json
+{
+  "capabilities": {
+    "chain_params": [
+      { "key": "root_note", "name": "Root", "type": "note", "mode": "multi", "min_note": 24, "max_note": 96 },
+      { "key": "lfo_rate", "name": "Rate", "type": "rate", "include_bars": true, "bars_mode": "pow2", "include_triplets": true },
+      { "key": "sample_file", "name": "Sample", "type": "filepath", "root": "/data/UserData/UserLibrary/Samples", "filter": [".wav", ".aif"] },
+      { "key": "start_ms", "name": "Start", "type": "wav_position", "display_unit": "ms", "mode": "trim_front", "filepath_param": "sample_file", "min": 0, "max": 5000, "step": 1 },
+      { "key": "label", "name": "Label", "type": "string", "default": "Init" },
+      { "key": "draw", "name": "Draw", "type": "canvas", "display_value_type": "percent", "trigger_value": "trigger" }
+    ]
+  }
+}
+```
+
+```json
+{
+  "ui_hierarchy": {
+    "levels": {
+      "root": {
+        "params": [
+          { "key": "sync", "name": "Sync", "type": "enum", "options": ["Off", "On"] },
+          { "key": "lfo_rate", "name": "Rate", "visible_if": { "param": "sync", "equals": "On" } },
+          { "level": "advanced", "label": "Advanced" }
+        ]
+      },
+      "advanced": {
+        "visible_if": { "param": "sync", "truthy": true },
+        "params": [
+          { "key": "label", "name": "Label", "type": "string" }
+        ]
+      }
+    }
+  }
+}
+```
 
 ## Shared Utilities
 
