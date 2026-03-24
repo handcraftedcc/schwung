@@ -1,7 +1,7 @@
 # Shadow UI Parameter Type Expansion Changelog
 
 Date: 2026-03-23
-Branch: codex/shadow-ui-parameter-additions
+Branch: parameter-additions
 
 ## Added Parameter Types
 
@@ -24,7 +24,7 @@ Branch: codex/shadow-ui-parameter-additions
   - Opens the shared on-screen keyboard text entry flow when edited.
 
 - `canvas`
-  - Adds a trigger-style parameter with configurable idle display formatting via `display_value_type`.
+  - Adds a custom canvas parameter with configurable display formatting via `display_value_type`.
 
 ## Visibility Rules
 
@@ -47,3 +47,46 @@ Branch: codex/shadow-ui-parameter-additions
 
 - Added test: `tests/shadow/test_shadow_param_type_expansion.sh`
 - Existing focused shadow tests still pass (hierarchy child prefixes, trigger enum reset, filepath browser regressions).
+
+---
+
+## Update: 2026-03-24 (Canvas Overlay Port)
+
+### Canvas Behavior Update
+
+- Ported the `canvas` implementation to a dedicated fullscreen canvas view (`VIEWS.CANVAS`) in `src/shadow/shadow_ui.js`.
+- Canvas opens on click from hierarchy (`Push: open`) instead of triggering a hardcoded parameter write.
+- Canvas scripts are now loaded from module scope using `canvas_script` (default `canvas.js`, supports `file.js#overlay_name` selector).
+- Named overlay lookup supports `canvas_overlay` (and aliases `canvas_target` / `overlay`).
+- Runtime overlay hooks are supported: `onOpen`, `onMidi`, `tick`, `draw`, `onClose`, `onExit`.
+- Canvas footer now shows:
+  - left: current parameter value
+  - right: parameter/file label
+- Background overlays are skipped while canvas is active so the canvas UI renders on a clean black background.
+
+### Trigger Logic Removal
+
+- Removed trigger-style canvas handling from hierarchy knob/edit flow.
+- `canvas` no longer sets `"trigger"` in response to turns/clicks; value display remains available.
+
+### Docs + Test Updates
+
+- Updated `docs/MODULES.md` canvas type docs to describe `canvas_script` / `canvas_overlay` overlay workflow (replacing trigger-style docs).
+- Updated `tests/shadow/test_shadow_param_type_expansion.sh` assertions from legacy `triggerCanvasParam` to:
+  - `openCanvasPreview`
+  - `drawCanvasPreview`
+  - `dispatchCanvasMidi`
+  - canvas-view transition expectations
+
+### Verification (2026-03-24)
+
+- `bash tests/shadow/test_shadow_param_type_expansion.sh` PASS
+- `bash tests/shadow/test_shadow_hierarchy_child_prefix.sh` PASS
+- `bash tests/shadow/test_shadow_trigger_enum_reset.sh` PASS
+
+### Install Status
+
+- Built and installed from `parameter-additions` using:
+  - `./scripts/build.sh`
+  - `./scripts/install.sh local --skip-confirmation --skip-modules`
+- `--skip-modules` used to avoid touching separately installed module repos.
