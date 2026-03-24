@@ -361,7 +361,7 @@ Modules expose parameters to the Shadow UI via `ui_hierarchy` in their get_param
 - `list_param`/`count_param`/`name_param`: For preset browser levels
 - `items_param`/`select_param`: For dynamic item selection levels
 
-**Important:** Use `key` (not `param`) for editable parameter objects. Metadata (type, min, max) comes from `chain_params`.
+**Important:** Use `key` (not `param`) for editable parameter objects. Metadata (type, min, max) can come from `ui_hierarchy` entries and/or `chain_params`.
 
 ### Chain Parameters
 
