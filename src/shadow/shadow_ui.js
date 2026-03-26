@@ -3212,7 +3212,10 @@ function loadMasterPreset(index, presetName) {
                 shadow_set_param(0, pfx + "polarity", String(lfoConfig.polarity || 0));
                 shadow_set_param(0, pfx + "sync", String(lfoConfig.sync || 0));
                 shadow_set_param(0, pfx + "rate_hz", String(lfoConfig.rate_hz || 1.0));
-                shadow_set_param(0, pfx + "rate_div", String(lfoConfig.rate_div || 16));
+                const presetRateDiv = Number.isFinite(Number(lfoConfig.rate_div))
+                    ? Number(lfoConfig.rate_div)
+                    : 16;
+                shadow_set_param(0, pfx + "rate_div", String(presetRateDiv));
                 shadow_set_param(0, pfx + "depth", String(lfoConfig.depth || 0));
                 shadow_set_param(0, pfx + "phase_offset", String(lfoConfig.phase_offset || 0));
                 shadow_set_param(0, pfx + "enabled", String(lfoConfig.enabled || 0));

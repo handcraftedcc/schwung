@@ -35,13 +35,18 @@ if [[ "$ui_labels" != "$expected_labels" ]]; then
   exit 1
 fi
 
-if ! rg -q 'rate_div \|\| 16' "$ui_file"; then
-  echo "FAIL: UI default synced LFO rate_div should be index 16 (1/1)" >&2
+if rg -q 'rate_div \|\| 16' "$ui_file"; then
+  echo "FAIL: UI must not use falsy fallback for rate_div (breaks index 0 / 16bar)" >&2
+  exit 1
+fi
+
+if ! rg -q 'lfoConfig\.rate_div\)\)\s*$' "$ui_file"; then
+  echo "FAIL: preset restore should parse lfoConfig.rate_div numerically" >&2
   exit 1
 fi
 
 if ! rg -q 'cfg\.rate_div\)\) \? Number\(cfg\.rate_div\) : 16;' "$ui_file"; then
-  echo "FAIL: UI loaded config fallback rate_div should be index 16 (1/1)" >&2
+  echo "FAIL: applied config fallback rate_div should be index 16 (1/1)" >&2
   exit 1
 fi
 
