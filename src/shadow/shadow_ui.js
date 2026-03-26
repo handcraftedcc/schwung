@@ -1348,7 +1348,12 @@ let selectedLfoItem = 0;
 let editingLfoValue = false;
 
 const LFO_SHAPES = ["Sine", "Tri", "Saw", "Square", "S&H", "Swishy"];
-const LFO_DIVISIONS = ["8bar", "4bar", "2bar", "1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/4T", "1/8T", "1/16T", "1/4D", "1/8D"];
+const LFO_DIVISIONS = [
+    "16bar", "15bar", "14bar", "13bar", "12bar", "11bar", "10bar", "9bar",
+    "8bar", "7bar", "6bar", "5bar", "4bar", "3bar", "2bar", "1bar",
+    "1/1", "1/1T", "1/2", "1/2T", "1/4", "1/4T", "1/8", "1/8T",
+    "1/16", "1/16T", "1/32", "1/32T"
+];
 
 /* LFO target picker state */
 let lfoTargetComponents = [];  /* Available components [{key, label}] */
@@ -3207,7 +3212,7 @@ function loadMasterPreset(index, presetName) {
                 shadow_set_param(0, pfx + "polarity", String(lfoConfig.polarity || 0));
                 shadow_set_param(0, pfx + "sync", String(lfoConfig.sync || 0));
                 shadow_set_param(0, pfx + "rate_hz", String(lfoConfig.rate_hz || 1.0));
-                shadow_set_param(0, pfx + "rate_div", String(lfoConfig.rate_div || 3));
+                shadow_set_param(0, pfx + "rate_div", String(lfoConfig.rate_div || 16));
                 shadow_set_param(0, pfx + "depth", String(lfoConfig.depth || 0));
                 shadow_set_param(0, pfx + "phase_offset", String(lfoConfig.phase_offset || 0));
                 shadow_set_param(0, pfx + "enabled", String(lfoConfig.enabled || 0));
@@ -4476,7 +4481,7 @@ function applyMasterFxLfoConfig(li, lfoConfig) {
     const polarity = Number.isFinite(Number(cfg.polarity)) ? Number(cfg.polarity) : 0;
     const sync = Number.isFinite(Number(cfg.sync)) ? Number(cfg.sync) : 0;
     const rateHz = Number.isFinite(Number(cfg.rate_hz)) ? Number(cfg.rate_hz) : 1.0;
-    const rateDiv = Number.isFinite(Number(cfg.rate_div)) ? Number(cfg.rate_div) : 3;
+    const rateDiv = Number.isFinite(Number(cfg.rate_div)) ? Number(cfg.rate_div) : 16;
     const depth = Number.isFinite(Number(cfg.depth)) ? Number(cfg.depth) : 0;
     const phaseOffset = Number.isFinite(Number(cfg.phase_offset)) ? Number(cfg.phase_offset) : 0;
     const enabled = Number.isFinite(Number(cfg.enabled)) ? Number(cfg.enabled) : 0;
