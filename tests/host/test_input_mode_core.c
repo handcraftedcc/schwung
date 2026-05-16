@@ -223,13 +223,17 @@ static void test_led_grid_classifier(void) {
     expect_led_class(colors, held, SCHWUNG_INPUT_VIEW_PLAY, "held pad colors are ignored");
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     schwung_input_mode_state_t state;
     schwung_input_mode_result_t result;
+    schwung_input_mode_config_t config;
 
     test_led_grid_classifier();
 
     schwung_input_mode_init(&state);
+    if (argc > 1) {
+        schwung_input_mode_set_modules_root(&state, argv[1]);
+    }
 
     memset(&result, 0, sizeof(result));
     if (schwung_input_mode_handle_midi(&state, 0, 0x09, 0x90, 68, 100, &result)) {
@@ -239,6 +243,7 @@ int main(void) {
 
     memset(&result, 0, sizeof(result));
     schwung_input_mode_set_track_mode(&state, 1, SCHWUNG_INPUT_MODE_TRUE_CHROMATIC_POC, &result);
+    schwung_input_mode_set_track_module(&state, 1, "chromatic", &result);
     if (result.count != 0) fail("enabling empty track should not emit panic notes");
 
     memset(&result, 0, sizeof(result));
@@ -274,6 +279,7 @@ int main(void) {
 
     memset(&result, 0, sizeof(result));
     schwung_input_mode_set_track_mode(&state, 3, SCHWUNG_INPUT_MODE_TRUE_CHROMATIC_POC, &result);
+    schwung_input_mode_set_track_module(&state, 3, "chromatic", &result);
     memset(&result, 0, sizeof(result));
     if (!schwung_input_mode_handle_midi(&state, 3, 0x09, 0x93, 99, 127, &result)) {
         fail("custom mode should block top pad note-on");
@@ -288,21 +294,61 @@ int main(void) {
 
     memset(&result, 0, sizeof(result));
     schwung_input_mode_set_track_mode(&state, 0, SCHWUNG_INPUT_MODE_DRUM32, &result);
+    schwung_input_mode_set_track_module(&state, 0, "drum32", &result);
+    config = schwung_input_mode_default_config();
+    config.root_octave = 1;
+    schwung_input_mode_set_track_config(&state, 0, &config, &result);
     memset(&result, 0, sizeof(result));
     if (!schwung_input_mode_handle_midi(&state, 0, 0x09, 0x90, 68, 96, &result)) {
         fail("drum32 should block pad note-on");
     }
     if (result.count != 1) fail("drum32 should emit one note");
-    expect_packet(&result, 0, 0x29, 0x90, 36, 96, "drum32 pad 0 maps to kick note 36");
+    expect_packet(&result, 0, 0x29, 0x90, 48, 96, "drum32 root octave offsets pad 0 to note 48");
 
     memset(&result, 0, sizeof(result));
     if (!schwung_input_mode_handle_midi(&state, 0, 0x08, 0x80, 68, 0, &result)) {
         fail("drum32 should block pad note-off");
     }
-    expect_packet(&result, 0, 0x28, 0x80, 36, 0, "drum32 releases note 36");
+    expect_packet(&result, 0, 0x28, 0x80, 48, 0, "drum32 releases octave-offset note 48");
+
+    memset(&result, 0, sizeof(result));
+    schwung_input_mode_set_track_mode(&state, 1, SCHWUNG_INPUT_MODE_TRUE_CHROMATIC_POC, &result);
+    schwung_input_mode_set_track_module(&state, 1, "chromatic", &result);
+    config = schwung_input_mode_default_config();
+    config.root = 2;
+    config.octave = 1;
+    config.scale = SCHWUNG_INPUT_SCALE_MAJOR;
+    schwung_input_mode_set_track_config(&state, 1, &config, &result);
+    memset(&result, 0, sizeof(result));
+    if (!schwung_input_mode_handle_midi(&state, 1, 0x09, 0x91, 68, 64, &result)) {
+        fail("chromatic should block root-shifted pad note-on");
+    }
+    expect_packet(&result, 0, 0x29, 0x91, 62, 64, "chromatic root and octave configure base note");
+    memset(&result, 0, sizeof(result));
+    if (!schwung_input_mode_handle_button(&state, 1, 0x0B, 0xB1, 55, 127, &result)) {
+        fail("plus button should be intercepted in chromatic mode");
+    }
+    if (result.param_update_count != 1) fail("plus button should report one param update");
+    if (strcmp(result.param_updates[0].key, "octave") != 0 || strcmp(result.param_updates[0].value, "2") != 0) {
+        fail("plus button should report updated chromatic octave param");
+    }
+    memset(&result, 0, sizeof(result));
+    if (!schwung_input_mode_handle_midi(&state, 1, 0x09, 0x91, 69, 80, &result)) {
+        fail("chromatic should still map after octave button");
+    }
+    expect_packet(&result, 0, 0x29, 0x91, 75, 80, "plus button increments chromatic octave");
+    memset(&result, 0, sizeof(result));
+    schwung_input_mode_set_track_mode(&state, 1, SCHWUNG_INPUT_MODE_NATIVE, &result);
 
     memset(&result, 0, sizeof(result));
     schwung_input_mode_set_track_mode(&state, 2, SCHWUNG_INPUT_MODE_CHORD_PADS, &result);
+    schwung_input_mode_set_track_module(&state, 2, "chord-pads", &result);
+    config = schwung_input_mode_default_config();
+    config.root = 0;
+    config.scale = SCHWUNG_INPUT_SCALE_MAJOR;
+    config.index_2 = 2;
+    config.index_3 = 4;
+    schwung_input_mode_set_track_config(&state, 2, &config, &result);
     memset(&result, 0, sizeof(result));
     if (!schwung_input_mode_handle_midi(&state, 2, 0x09, 0x92, 68, 110, &result)) {
         fail("chord pads should block pad note-on");
@@ -313,11 +359,31 @@ int main(void) {
     expect_packet(&result, 2, 0x29, 0x92, 67, 110, "chord pad 0 emits fifth");
 
     memset(&result, 0, sizeof(result));
+    if (!schwung_input_mode_handle_button(&state, 2, 0x0B, 0xB2, 54, 127, &result)) {
+        fail("minus button should be intercepted in chord mode");
+    }
+    if (result.param_update_count != 1) fail("minus button should report one param update");
+    if (strcmp(result.param_updates[0].key, "octave") != 0 || strcmp(result.param_updates[0].value, "-1") != 0) {
+        fail("minus button should report updated chord octave param");
+    }
+    if (result.count != 3) fail("octave button should panic held chord notes before shifting");
+    expect_packet(&result, 0, 0x28, 0x82, 60, 0, "chord octave shift panics root");
+    expect_packet(&result, 1, 0x28, 0x82, 64, 0, "chord octave shift panics third");
+    expect_packet(&result, 2, 0x28, 0x82, 67, 0, "chord octave shift panics fifth");
+    memset(&result, 0, sizeof(result));
+    if (!schwung_input_mode_handle_midi(&state, 2, 0x09, 0x92, 68, 110, &result)) {
+        fail("chord pads should block after octave decrement");
+    }
+    expect_packet(&result, 0, 0x29, 0x92, 48, 110, "minus button decrements chord octave");
+    expect_packet(&result, 1, 0x29, 0x92, 52, 110, "minus chord third follows configured scale degree");
+    expect_packet(&result, 2, 0x29, 0x92, 55, 110, "minus chord fifth follows configured scale degree");
+
+    memset(&result, 0, sizeof(result));
     schwung_input_mode_set_track_mode(&state, 2, SCHWUNG_INPUT_MODE_NATIVE, &result);
     if (result.count != 3) fail("switching chord pads to native should panic all held notes");
-    expect_packet(&result, 0, 0x28, 0x82, 60, 0, "chord panic root");
-    expect_packet(&result, 1, 0x28, 0x82, 64, 0, "chord panic third");
-    expect_packet(&result, 2, 0x28, 0x82, 67, 0, "chord panic fifth");
+    expect_packet(&result, 0, 0x28, 0x82, 48, 0, "chord panic root");
+    expect_packet(&result, 1, 0x28, 0x82, 52, 0, "chord panic third");
+    expect_packet(&result, 2, 0x28, 0x82, 55, 0, "chord panic fifth");
 
     printf("PASS: input mode core mapping and panic behavior\n");
     return 0;

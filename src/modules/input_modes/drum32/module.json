@@ -1,0 +1,30 @@
+{
+  "id": "drum32",
+  "name": "32 Drum Pads",
+  "version": "0.1.0",
+  "api_version": 1,
+  "component_type": "input_mode",
+  "dsp": "dsp.so",
+  "description": "Maps the 32 playable pads to consecutive drum MIDI notes.",
+  "author": "Schwung",
+  "capabilities": {
+    "input_mode": true,
+    "pad_led_modes": ["pass_through"]
+  },
+  "input_mode": {
+    "engine": "native_dsp",
+    "mode": "drum32"
+  },
+  "chain_params": [
+    {
+      "key": "root_octave",
+      "name": "Root Octave",
+      "label": "Root Octave",
+      "type": "int",
+      "min": -3,
+      "max": 3,
+      "step": 1,
+      "default": 0
+    }
+  ]
+}

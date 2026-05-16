@@ -659,6 +659,51 @@ static void shadow_input_mode_queue_result(const schwung_input_mode_result_t *re
     for (int i = 0; i < result->count; i++) {
         shadow_chain_midi_inject(result->packets[i], 4);
     }
+    for (int i = 0; i < result->light_count; i++) {
+        shadow_queue_led(result->light_packets[i][0],
+                         result->light_packets[i][1],
+                         result->light_packets[i][2],
+                         result->light_packets[i][3]);
+    }
+}
+
+static void shadow_input_mode_apply_param_updates(int track, const schwung_input_mode_result_t *result)
+{
+    if (!shadow_control || !result || track < 0 || track >= SHADOW_UI_SLOTS) return;
+    for (int u = 0; u < result->param_update_count; u++) {
+        const char *key = result->param_updates[u].key;
+        const char *value = result->param_updates[u].value;
+        if (!key[0]) continue;
+        int slot = -1;
+        int count = shadow_control->input_track_param_counts[track];
+        if (count > SHADOW_INPUT_PARAM_COUNT) count = SHADOW_INPUT_PARAM_COUNT;
+        for (int i = 0; i < count; i++) {
+            if (strncmp((const char *)shadow_control->input_track_param_keys[track][i],
+                        key,
+                        SHADOW_INPUT_PARAM_KEY_LEN) == 0) {
+                slot = i;
+                break;
+            }
+        }
+        if (slot < 0 && count < SHADOW_INPUT_PARAM_COUNT) {
+            slot = count;
+            shadow_control->input_track_param_counts[track] = (uint8_t)(count + 1);
+        }
+        if (slot < 0) continue;
+        snprintf((char *)shadow_control->input_track_param_keys[track][slot],
+                 SHADOW_INPUT_PARAM_KEY_LEN,
+                 "%s",
+                 key);
+        snprintf((char *)shadow_control->input_track_param_values[track][slot],
+                 SHADOW_INPUT_PARAM_VALUE_LEN,
+                 "%s",
+                 value);
+        if (strcmp(key, "octave") == 0) {
+            shadow_control->input_track_octaves[track] = (int8_t)atoi(value);
+        } else if (strcmp(key, "root_octave") == 0) {
+            shadow_control->input_track_root_octaves[track] = (int8_t)atoi(value);
+        }
+    }
 }
 
 static void shadow_input_mode_ensure_initialized(void)
@@ -684,6 +729,15 @@ static void shadow_input_mode_sync_control(void)
     if (!shadow_control) return;
 
     for (int i = 0; i < SHADOW_UI_SLOTS; i++) {
+        const char *module_id = (const char *)shadow_control->input_track_module_ids[i];
+        if (!module_id[0]) module_id = "native";
+        if (strcmp(shadow_input_mode_state.tracks[i].module.module_id, module_id) != 0) {
+            schwung_input_mode_result_t module_result;
+            if (schwung_input_mode_set_track_module(&shadow_input_mode_state, i, module_id, &module_result)) {
+                shadow_input_mode_queue_result(&module_result);
+            }
+        }
+
         uint8_t next_mode = shadow_input_mode_normalize(shadow_control->input_track_modes[i]);
         if (shadow_input_mode_state.tracks[i].mode != next_mode) {
             schwung_input_mode_result_t result;
@@ -698,6 +752,35 @@ static void shadow_input_mode_sync_control(void)
         }
         shadow_input_mode_state.tracks[i].led_mode =
             (schwung_input_led_mode_t)shadow_control->input_led_modes[i];
+
+        schwung_input_mode_config_t config = schwung_input_mode_default_config();
+        config.root = shadow_control->input_track_roots[i];
+        config.scale = shadow_control->input_track_scales[i];
+        config.octave = shadow_control->input_track_octaves[i];
+        config.root_octave = shadow_control->input_track_root_octaves[i];
+        config.index_2 = shadow_control->input_track_index_2[i];
+        config.index_3 = shadow_control->input_track_index_3[i];
+        schwung_input_mode_result_t config_result;
+        if (schwung_input_mode_set_track_config(&shadow_input_mode_state, i, &config, &config_result)) {
+            shadow_input_mode_queue_result(&config_result);
+        }
+
+        int param_count = shadow_control->input_track_param_counts[i];
+        if (param_count > SHADOW_INPUT_PARAM_COUNT) param_count = SHADOW_INPUT_PARAM_COUNT;
+        for (int p = 0; p < param_count; p++) {
+            const char *key = (const char *)shadow_control->input_track_param_keys[i][p];
+            const char *value = (const char *)shadow_control->input_track_param_values[i][p];
+            if (!key[0]) continue;
+            schwung_input_mode_result_t param_result;
+            if (schwung_input_mode_set_track_param(&shadow_input_mode_state, i, key, value, &param_result)) {
+                shadow_input_mode_queue_result(&param_result);
+            }
+        }
+
+        int track_color = led_queue_get_note_led_color(43 - i);
+        if (track_color >= 0) {
+            shadow_control->input_track_colors[i] = (uint8_t)track_color;
+        }
     }
 }
 
@@ -3022,6 +3105,22 @@ static void init_shadow_shm(void)
             for (int i = 0; i < SHADOW_UI_SLOTS; i++) {
                 shadow_control->input_track_modes[i] = SCHWUNG_INPUT_MODE_NATIVE;
                 shadow_control->input_led_modes[i] = SCHWUNG_INPUT_LED_PASS_THROUGH;
+                snprintf((char *)shadow_control->input_track_module_ids[i],
+                         SHADOW_INPUT_MODULE_ID_LEN,
+                         "%s",
+                         "native");
+                shadow_control->input_track_param_counts[i] = 0;
+                memset((void *)shadow_control->input_track_param_keys[i], 0,
+                       sizeof(shadow_control->input_track_param_keys[i]));
+                memset((void *)shadow_control->input_track_param_values[i], 0,
+                       sizeof(shadow_control->input_track_param_values[i]));
+                shadow_control->input_track_roots[i] = 0;
+                shadow_control->input_track_scales[i] = SCHWUNG_INPUT_SCALE_MAJOR;
+                shadow_control->input_track_octaves[i] = 0;
+                shadow_control->input_track_root_octaves[i] = 0;
+                shadow_control->input_track_index_2[i] = 2;
+                shadow_control->input_track_index_3[i] = 4;
+                shadow_control->input_track_colors[i] = 0;
             }
             /* Initialize TTS defaults */
             shadow_control->tts_enabled = 0;    /* Screen Reader off by default */
@@ -5943,6 +6042,26 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             uint8_t d2 = hw_midi[j + 3];
 
             if (cable != 0x00) continue;
+            if (cin == 0x0B && type == 0xB0 && (d1 == CC_DOWN || d1 == CC_UP)) {
+                schwung_input_mode_result_t result;
+                if (schwung_input_mode_handle_button(&shadow_input_mode_state,
+                                                     active_track,
+                                                     cin,
+                                                     status,
+                                                     d1,
+                                                     d2,
+                                                     &result)) {
+                    LOG_INFO("input_mode_button",
+                             "button override cc=%u value=%u active_track=%d packets=%u",
+                             d1, d2, active_track, result.count);
+                    shadow_input_mode_apply_param_updates(active_track, &result);
+                    sh_midi[j] = 0; sh_midi[j + 1] = 0; sh_midi[j + 2] = 0; sh_midi[j + 3] = 0;
+                    hw_midi[j] = 0; hw_midi[j + 1] = 0; hw_midi[j + 2] = 0; hw_midi[j + 3] = 0;
+                    shadow_input_mode_queue_result(&result);
+                    shadow_midi_force_defer(2);
+                }
+                continue;
+            }
             if (!((cin == 0x09 || cin == 0x08) && (type == 0x90 || type == 0x80))) continue;
             if (d1 < 68 || d1 > 99) continue;
 

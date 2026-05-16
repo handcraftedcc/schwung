@@ -185,6 +185,9 @@ mkdir -p ./build/modules/audio_fx/freeverb/
 mkdir -p ./build/modules/midi_fx/chord/
 mkdir -p ./build/modules/midi_fx/arp/
 mkdir -p ./build/modules/midi_fx/velocity_scale/
+mkdir -p ./build/modules/input_modes/drum32/
+mkdir -p ./build/modules/input_modes/chromatic/
+mkdir -p ./build/modules/input_modes/chord-pads/
 mkdir -p ./build/modules/sound_generators/linein/
 mkdir -p ./build/modules/tools/wav-player/
 mkdir -p ./build/lib/jack
@@ -256,7 +259,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_led_queue.c src/host/shadow_fd_trace.c src/host/shadow_state.c \
     src/host/shadow_midi.c src/host/input_mode.c src/host/unified_log.c \
     $SHIM_TTS_SRC \
-    src/host/shadow_constants.h src/host/shadow_midi.h src/host/input_mode.h src/host/shadow_sampler.h \
+    src/host/shadow_constants.h src/host/shadow_midi.h src/host/input_mode.h src/host/input_mode_api_v1.h src/host/shadow_sampler.h \
     src/host/shadow_set_pages.h src/host/shadow_dbus.h src/host/shadow_chain_mgmt.h \
     src/host/shadow_chain_types.h src/host/shadow_link_audio.h src/host/shadow_process.h \
     src/host/shadow_resample.h src/host/shadow_overlay.h src/host/shadow_pin_scanner.h \
@@ -535,6 +538,41 @@ if needs_rebuild build/modules/midi_fx/velocity_scale/dsp.so \
         -Isrc
 else
     echo "Skipping velocity scale MIDI FX (up to date)"
+fi
+
+echo "Building Input Mode plugins..."
+
+if needs_rebuild build/modules/input_modes/drum32/dsp.so \
+    src/modules/input_modes/drum32/dsp/drum32.c src/host/input_mode_api_v1.h; then
+    echo "Building drum32 input mode..."
+    "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+        src/modules/input_modes/drum32/dsp/drum32.c \
+        -o build/modules/input_modes/drum32/dsp.so \
+        -Isrc
+else
+    echo "Skipping drum32 input mode (up to date)"
+fi
+
+if needs_rebuild build/modules/input_modes/chromatic/dsp.so \
+    src/modules/input_modes/chromatic/dsp/chromatic.c src/host/input_mode_api_v1.h; then
+    echo "Building chromatic input mode..."
+    "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+        src/modules/input_modes/chromatic/dsp/chromatic.c \
+        -o build/modules/input_modes/chromatic/dsp.so \
+        -Isrc
+else
+    echo "Skipping chromatic input mode (up to date)"
+fi
+
+if needs_rebuild build/modules/input_modes/chord-pads/dsp.so \
+    src/modules/input_modes/chord-pads/dsp/chord_pads.c src/host/input_mode_api_v1.h; then
+    echo "Building chord-pads input mode..."
+    "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+        src/modules/input_modes/chord-pads/dsp/chord_pads.c \
+        -o build/modules/input_modes/chord-pads/dsp.so \
+        -Isrc
+else
+    echo "Skipping chord-pads input mode (up to date)"
 fi
 
 echo "Building Sound Generator plugins..."

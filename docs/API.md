@@ -235,6 +235,10 @@ shadow_get_ui_flags() / shadow_clear_ui_flags(mask)
 shadow_get_ui_flags2() / shadow_clear_ui_flags2(mask)
 shadow_get_input_active_track()
 shadow_get_input_track_mode(track) / shadow_set_input_track_mode(track, mode)
+shadow_set_input_track_module(track, module_id)
+shadow_clear_input_track_params(track)
+shadow_set_input_track_param(track, index, key, value)
+shadow_set_input_track_config(track, root, scale, octave, root_octave, index_2, index_3)
 shadow_get_input_led_mode(track) / shadow_set_input_led_mode(track, mode)
 shadow_get_set_musical_context() // -> {valid, rootNote, scale, melodicLayout}
 shadow_get_suspend_overtake() / shadow_set_suspend_overtake(v)
@@ -354,14 +358,16 @@ The host provides MIDI input processing that can be configured from the Settings
 Input Modes are configured from the Shadow UI with Shift + Volume Touch + Step 9.
 The menu discovers installed modules with `component_type: "input_mode"` and renders their editable fields from `chain_params`, matching the rest of the Shadow UI module workflow. Native pad behavior is shown as a built-in selector option at the top.
 
-The current core test module exposes a `Layout` enum. Its host-backed values map to:
+The built-in native input modules map to:
 
-| Layout value | Host mode | Behavior |
-|--------------|-----------|----------|
-| `native` | `0` Native | Pad notes pass through to Move unchanged. |
-| `true_chromatic_poc` | `1` Chromatic | Pads 68-99 are remapped to notes 48-79 and injected on the selected track channel. |
-| `drum32` | `2` Drum32 | Pads 68-99 are remapped to notes 36-67. |
-| `chord_pads` | `3` Chord Pads | Each pad emits a three-note triad with matching note-offs. |
+| Module | Host mode | Behavior |
+|--------|-----------|----------|
+| Native | `0` Native | Pad notes pass through to Move unchanged. |
+| `chromatic` | `1` Chromatic | Pads 68-99 are remapped from the configured root and octave, then injected on the selected track channel. |
+| `drum32` | `2` Drum32 | Pads 68-99 are remapped to consecutive drum notes from note 36 plus `root_octave`. |
+| `chord-pads` | `3` Chord Pads | Each pad emits a three-note scale chord with matching note-offs. |
+
+The Shadow UI resolves each module's `chain_params`, writes the selected module id with `shadow_set_input_track_module()`, and sends parameter key/value pairs with `shadow_set_input_track_param()`. The shim loads `/data/UserData/schwung/modules/input_modes/<module-id>/dsp.so` and calls the input module API. For non-Native melodic modes, the bundled module can intercept the native - and + buttons as octave down/up controls.
 
 Input modes are saved per set in `input_modes.json`. See [INPUT_MODES.md](INPUT_MODES.md) for the user workflow and persistence format.
 

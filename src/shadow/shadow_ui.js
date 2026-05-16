@@ -287,6 +287,7 @@ const INPUT_MODE_DRUM32 = 2;
 const INPUT_MODE_CHORD_PADS = 3;
 const INPUT_LED_PASS_THROUGH = 0;
 const INPUT_LED_MODULE = 1;
+const LEGACY_INPUT_MODE_TEST_MODULE = "test";
 const INPUT_MODE_NATIVE_MODULE = {
     id: "native",
     name: "Native",
@@ -335,6 +336,7 @@ let selectedSlot = 0;
 let selectedPatch = 0;
 let inputModeSelectedRow = 0;
 let inputModeSelectorIndex = 0;
+let inputModeEditMode = false;
 let inputModeSelectedModule = ["native", "native", "native", "native"];
 let inputModeTrackParams = [
     { layout: "native" },
@@ -555,8 +557,61 @@ function moduleToInputModeValue(module, params) {
     return INPUT_MODE_NATIVE;
 }
 
+function inputModeRootValue(value) {
+    if (typeof value === "number") return Math.max(0, Math.min(11, value | 0));
+    if (/^-?\d+$/.test(String(value || ""))) {
+        return Math.max(0, Math.min(11, Number(value) | 0));
+    }
+    const key = String(value || "C").toUpperCase().replace(/\u266f/g, "#").replace(/\u266d/g, "B");
+    const roots = {
+        "C": 0, "C#": 1, "DB": 1, "D": 2, "D#": 3, "EB": 3,
+        "E": 4, "F": 5, "F#": 6, "GB": 6, "G": 7, "G#": 8,
+        "AB": 8, "A": 9, "A#": 10, "BB": 10, "B": 11
+    };
+    return roots[key] !== undefined ? roots[key] : 0;
+}
+
+function inputModeScaleValue(value) {
+    const key = String(value || "major").toLowerCase();
+    if (key === "minor" || key === "natural_minor") return 1;
+    if (key === "chromatic") return 2;
+    return 0;
+}
+
+function inputModeNumberValue(params, key, fallback) {
+    const raw = params && params[key] !== undefined ? params[key] : fallback;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value | 0 : fallback;
+}
+
+function inputModeConfigFromParams(params) {
+    return {
+        root: inputModeRootValue(params ? params.root : 0),
+        scale: inputModeScaleValue(params ? params.scale : "major"),
+        octave: inputModeNumberValue(params, "octave", 0),
+        root_octave: inputModeNumberValue(params, "root_octave", 0),
+        index_2: inputModeNumberValue(params, "index_2", 2),
+        index_3: inputModeNumberValue(params, "index_3", 4)
+    };
+}
+
 function getInputModeModuleById(id) {
     return inputModeModules.find(m => m.id === id) || INPUT_MODE_NATIVE_MODULE;
+}
+
+function inputModeModuleIdForLayout(layout) {
+    const mode = layoutToInputModeValue(layout);
+    if (mode === INPUT_MODE_DRUM32) return "drum32";
+    if (mode === INPUT_MODE_TRUE_CHROMATIC_POC) return "chromatic";
+    if (mode === INPUT_MODE_CHORD_PADS) return "chord-pads";
+    return "native";
+}
+
+function normalizeInputModeModuleId(moduleId, params) {
+    if (moduleId === LEGACY_INPUT_MODE_TEST_MODULE) {
+        return inputModeModuleIdForLayout((params && params.layout) || (params && params.mode) || "native");
+    }
+    return moduleId || "native";
 }
 
 function getInputModeParams(module) {
@@ -589,9 +644,13 @@ function selectedInputModeName(track) {
 }
 
 function applyInputModeTrackConfig(track) {
-    const moduleId = inputModeSelectedModule[track] || "native";
     const params = inputModeTrackParams[track] || {};
+    const moduleId = normalizeInputModeModuleId(inputModeSelectedModule[track], params);
+    inputModeSelectedModule[track] = moduleId;
     const module = getInputModeModuleById(moduleId);
+    setInputTrackModule(track, moduleId);
+    setInputTrackParams(track, module, params);
+    setInputTrackConfig(track, module, params);
     setInputTrackMode(track, moduleToInputModeValue(module, params));
 }
 
@@ -602,6 +661,7 @@ function refreshInputModeModules() {
             const modules = host_list_modules() || [];
             for (const mod of modules) {
                 if (!mod || mod.component_type !== "input_mode") continue;
+                if (mod.id === LEGACY_INPUT_MODE_TEST_MODULE) continue;
                 let meta = null;
                 if (typeof host_get_module_metadata === "function") {
                     try { meta = host_get_module_metadata(mod.id); } catch (e) { meta = null; }
@@ -643,6 +703,40 @@ function getInputTrackMode(track) {
 function setInputTrackMode(track, mode) {
     if (typeof shadow_set_input_track_mode === "function") {
         shadow_set_input_track_mode(track, mode >= INPUT_MODE_NATIVE && mode <= INPUT_MODE_CHORD_PADS ? mode : INPUT_MODE_NATIVE);
+    }
+}
+
+function setInputTrackConfig(track, module, params) {
+    if (typeof shadow_set_input_track_config !== "function") return;
+    const config = inputModeConfigFromParams(params || {});
+    shadow_set_input_track_config(track,
+        config.root,
+        config.scale,
+        config.octave,
+        config.root_octave,
+        config.index_2,
+        config.index_3);
+}
+
+function setInputTrackModule(track, moduleId) {
+    if (typeof shadow_set_input_track_module === "function") {
+        shadow_set_input_track_module(track, moduleId || "native");
+    }
+}
+
+function setInputTrackParams(track, module, params) {
+    if (typeof shadow_clear_input_track_params !== "function" ||
+        typeof shadow_set_input_track_param !== "function") {
+        return;
+    }
+    shadow_clear_input_track_params(track);
+    const items = getInputModeParams(module).filter(item => item && item.key);
+    let index = 0;
+    for (const item of items) {
+        if (index >= 16) break;
+        const value = getInputModeParamValue(track, item);
+        shadow_set_input_track_param(track, index, item.key, String(value));
+        index++;
     }
 }
 
@@ -701,8 +795,11 @@ function loadInputModesFromDir(dir) {
         for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
             const entry = tracks[String(i + 1)] || tracks[String(i)] || null;
             if (!entry) continue;
-            inputModeSelectedModule[i] = entry.module || (entry.mode && entry.mode !== "native" ? "test" : "native");
+            const legacyLayout = entry.mode || (entry.params && entry.params.layout);
             inputModeTrackParams[i] = Object.assign({ layout: entry.mode || "native" }, entry.params || {});
+            inputModeSelectedModule[i] = normalizeInputModeModuleId(
+                entry.module || inputModeModuleIdForLayout(legacyLayout || "native"),
+                inputModeTrackParams[i]);
             applyInputModeTrackConfig(i);
             setInputLedMode(i, inputLedOptionFromValue(entry.led_mode));
         }
@@ -720,6 +817,7 @@ function enterInputModeMenu() {
 function enterInputModeTrackView(track) {
     selectedSlot = Math.max(0, Math.min(SHADOW_UI_SLOTS - 1, track));
     inputModeSelectedRow = 0;
+    inputModeEditMode = false;
     if (typeof shadow_set_focused_slot === "function") {
         shadow_set_focused_slot(selectedSlot);
     }
@@ -733,6 +831,7 @@ function enterInputModeTrackView(track) {
 
 function enterInputModeSelector() {
     refreshInputModeModules();
+    inputModeEditMode = false;
     const track = getInputModeTrack();
     const current = inputModeSelectedModule[track] || "native";
     const idx = inputModeModules.findIndex(m => m.id === current);
@@ -767,19 +866,83 @@ function drawInputModeMenu() {
         selectedIndex: inputModeSelectedRow,
         listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
         getLabel: (item) => item.label || item.name || item.key,
-        getValue: (item) => item.key === SWAP_MODULE_ACTION ? "" : formatInputModeParamValue(track, item)
+        getValue: (item) => {
+            if (item.key === SWAP_MODULE_ACTION) return "";
+            const value = formatInputModeParamValue(track, item);
+            return inputModeEditMode && items[inputModeSelectedRow] === item ? "[" + value + "]" : value;
+        }
     });
-    drawFooter({left: "Back: done", right: "Click: edit"});
+    drawFooter(inputModeEditMode
+        ? {left: "Click: done", right: "Jog: adjust"}
+        : {left: "Back: done", right: "Click: edit"});
 }
 
 function handleInputModeJog(delta) {
     const track = getInputModeTrack();
     const module = getInputModeModuleById(inputModeSelectedModule[track]);
     const items = getInputModeParams(module).concat([{ key: SWAP_MODULE_ACTION, label: "Swap Module", type: "action" }]);
+    if (inputModeEditMode) {
+        const item = items[inputModeSelectedRow];
+        if (handleInputModeParamDelta(track, item, delta)) {
+            saveInputModesToSetState();
+            announceParameter(item.label || item.name || item.key, formatInputModeParamValue(track, item));
+            needsRedraw = true;
+        }
+        return;
+    }
     inputModeSelectedRow = Math.max(0, Math.min(items.length - 1, inputModeSelectedRow + delta));
     const item = items[inputModeSelectedRow];
     announceMenuItem(item.label || item.name || item.key, item.key === SWAP_MODULE_ACTION ? "" : formatInputModeParamValue(track, item));
     needsRedraw = true;
+}
+
+function beginInputModeParamEdit(track, item) {
+    if (!item || item.key === SWAP_MODULE_ACTION || item.type === "action") return false;
+    inputModeEditMode = true;
+    announceParameter(item.label || item.name || item.key, formatInputModeParamValue(track, item));
+    needsRedraw = true;
+    return true;
+}
+
+function endInputModeParamEdit(track, item) {
+    inputModeEditMode = false;
+    saveInputModesToSetState();
+    if (item) {
+        announceMenuItem(item.label || item.name || item.key, formatInputModeParamValue(track, item));
+    }
+    needsRedraw = true;
+}
+
+function clampInputModeParam(value, item) {
+    const min = item.min !== undefined ? Number(item.min) : -999;
+    const max = item.max !== undefined ? Number(item.max) : 999;
+    return Math.max(min, Math.min(max, value));
+}
+
+function handleInputModeParamDelta(track, item, delta) {
+    if (!item || item.key === SWAP_MODULE_ACTION) return false;
+    const params = inputModeTrackParams[track] || {};
+
+    if (item.type === "enum") {
+        const values = Array.isArray(item.values) && item.values.length > 0 ? item.values : item.options;
+        if (!Array.isArray(values) || values.length === 0) return false;
+        const current = getInputModeParamValue(track, item);
+        let idx = values.indexOf(current);
+        if (idx < 0) idx = 0;
+        params[item.key] = values[(idx + delta + values.length) % values.length];
+    } else if (item.type === "int" || item.type === "float") {
+        const step = item.step !== undefined ? Number(item.step) : 1;
+        const current = Number(getInputModeParamValue(track, item));
+        const base = Number.isFinite(current) ? current : Number(item.default || 0);
+        const next = clampInputModeParam(base + step * delta, item);
+        params[item.key] = item.type === "int" ? Math.round(next) : next;
+    } else {
+        return false;
+    }
+
+    inputModeTrackParams[track] = params;
+    applyInputModeTrackConfig(track);
+    return true;
 }
 
 function handleInputModeSelect() {
@@ -792,21 +955,11 @@ function handleInputModeSelect() {
         enterInputModeSelector();
         return;
     }
-    if (item.type === "enum") {
-        const params = inputModeTrackParams[track] || {};
-        const values = Array.isArray(item.values) && item.values.length > 0 ? item.values : item.options;
-        if (Array.isArray(values) && values.length > 0) {
-            const current = getInputModeParamValue(track, item);
-            let idx = values.indexOf(current);
-            if (idx < 0) idx = 0;
-            params[item.key] = values[(idx + 1) % values.length];
-            inputModeTrackParams[track] = params;
-            applyInputModeTrackConfig(track);
-        }
+    if (inputModeEditMode) {
+        endInputModeParamEdit(track, item);
+    } else {
+        beginInputModeParamEdit(track, item);
     }
-    saveInputModesToSetState();
-    needsRedraw = true;
-    announceMenuItem(item.label || item.name || item.key, formatInputModeParamValue(track, item));
 }
 
 function handleInputModeSelectorJog(delta) {
@@ -832,6 +985,7 @@ function handleInputModeSelectorSelect() {
     applyInputModeTrackConfig(track);
     saveInputModesToSetState();
     inputModeSelectedRow = 0;
+    inputModeEditMode = false;
     if (module.id === "native") {
         enterInputModeSelector();
     } else {
@@ -841,6 +995,13 @@ function handleInputModeSelectorSelect() {
 }
 
 function handleInputModeBack() {
+    if (inputModeEditMode) {
+        const track = getInputModeTrack();
+        const module = getInputModeModuleById(inputModeSelectedModule[track]);
+        const items = getInputModeParams(module).concat([{ key: SWAP_MODULE_ACTION, label: "Swap Module", type: "action" }]);
+        endInputModeParamEdit(track, items[inputModeSelectedRow]);
+        return;
+    }
     setView(VIEWS.SLOTS);
     announce("Slots Menu");
 }
@@ -15685,6 +15846,11 @@ globalThis.onMidiMessageInternal = function(data) {
         if (d1 >= KNOB_CC_START && d1 <= KNOB_CC_END) {
             const knobIndex = d1 - KNOB_CC_START;
             const delta = decodeDelta(d2);
+
+            if (view === VIEWS.INPUT_MODE && inputModeEditMode) {
+                handleInputModeJog(delta);
+                return;
+            }
 
             /* Use shared knob handler for hierarchy/chain editor contexts */
             if (adjustKnobAndShow(knobIndex, delta)) {

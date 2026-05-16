@@ -375,6 +375,104 @@ static JSValue js_shadow_set_input_track_mode(JSContext *ctx, JSValueConst this_
     return JS_UNDEFINED;
 }
 
+static JSValue js_shadow_set_input_track_module(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 2) return JS_UNDEFINED;
+    int track = 0;
+    if (!js_track_arg(ctx, argv, &track)) return JS_UNDEFINED;
+    const char *module_id = JS_ToCString(ctx, argv[1]);
+    if (!module_id) return JS_UNDEFINED;
+    snprintf((char *)shadow_control->input_track_module_ids[track],
+             SHADOW_INPUT_MODULE_ID_LEN,
+             "%s",
+             module_id);
+    JS_FreeCString(ctx, module_id);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_shadow_clear_input_track_params(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int track = 0;
+    if (!js_track_arg(ctx, argv, &track)) return JS_UNDEFINED;
+    shadow_control->input_track_param_counts[track] = 0;
+    memset((void *)shadow_control->input_track_param_keys[track], 0,
+           sizeof(shadow_control->input_track_param_keys[track]));
+    memset((void *)shadow_control->input_track_param_values[track], 0,
+           sizeof(shadow_control->input_track_param_values[track]));
+    return JS_UNDEFINED;
+}
+
+static JSValue js_shadow_set_input_track_param(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 4) return JS_UNDEFINED;
+    int track = 0;
+    int index = 0;
+    if (!js_track_arg(ctx, argv, &track)) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &index, argv[1])) return JS_UNDEFINED;
+    if (index < 0 || index >= SHADOW_INPUT_PARAM_COUNT) return JS_UNDEFINED;
+    const char *key = JS_ToCString(ctx, argv[2]);
+    const char *value = JS_ToCString(ctx, argv[3]);
+    if (!key || !value) {
+        if (key) JS_FreeCString(ctx, key);
+        if (value) JS_FreeCString(ctx, value);
+        return JS_UNDEFINED;
+    }
+    snprintf((char *)shadow_control->input_track_param_keys[track][index],
+             SHADOW_INPUT_PARAM_KEY_LEN,
+             "%s",
+             key);
+    snprintf((char *)shadow_control->input_track_param_values[track][index],
+             SHADOW_INPUT_PARAM_VALUE_LEN,
+             "%s",
+             value);
+    if (shadow_control->input_track_param_counts[track] <= index) {
+        shadow_control->input_track_param_counts[track] = (uint8_t)(index + 1);
+    }
+    JS_FreeCString(ctx, key);
+    JS_FreeCString(ctx, value);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_shadow_set_input_track_config(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 7) return JS_UNDEFINED;
+    int track = 0;
+    int root = 0;
+    int scale = 0;
+    int octave = 0;
+    int root_octave = 0;
+    int index_2 = 2;
+    int index_3 = 4;
+    if (!js_track_arg(ctx, argv, &track)) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &root, argv[1])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &scale, argv[2])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &octave, argv[3])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &root_octave, argv[4])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &index_2, argv[5])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &index_3, argv[6])) return JS_UNDEFINED;
+
+    if (root < 0) root = 0;
+    if (root > 11) root = root % 12;
+    if (scale < 0 || scale > 2) scale = 0;
+    if (octave < -5) octave = -5;
+    if (octave > 5) octave = 5;
+    if (root_octave < -5) root_octave = -5;
+    if (root_octave > 5) root_octave = 5;
+    if (index_2 < 0) index_2 = 0;
+    if (index_2 > 15) index_2 = 15;
+    if (index_3 < 0) index_3 = 0;
+    if (index_3 > 15) index_3 = 15;
+
+    shadow_control->input_track_roots[track] = (uint8_t)root;
+    shadow_control->input_track_scales[track] = (uint8_t)scale;
+    shadow_control->input_track_octaves[track] = (int8_t)octave;
+    shadow_control->input_track_root_octaves[track] = (int8_t)root_octave;
+    shadow_control->input_track_index_2[track] = (uint8_t)index_2;
+    shadow_control->input_track_index_3[track] = (uint8_t)index_3;
+    return JS_UNDEFINED;
+}
+
 static JSValue js_shadow_get_input_led_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (!shadow_control || argc < 1) return JS_NewInt32(ctx, 0);
@@ -3175,6 +3273,10 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_input_active_track", JS_NewCFunction(ctx, js_shadow_get_input_active_track, "shadow_get_input_active_track", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_input_track_mode", JS_NewCFunction(ctx, js_shadow_get_input_track_mode, "shadow_get_input_track_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_input_track_mode", JS_NewCFunction(ctx, js_shadow_set_input_track_mode, "shadow_set_input_track_mode", 2));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_input_track_module", JS_NewCFunction(ctx, js_shadow_set_input_track_module, "shadow_set_input_track_module", 2));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_clear_input_track_params", JS_NewCFunction(ctx, js_shadow_clear_input_track_params, "shadow_clear_input_track_params", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_input_track_param", JS_NewCFunction(ctx, js_shadow_set_input_track_param, "shadow_set_input_track_param", 4));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_input_track_config", JS_NewCFunction(ctx, js_shadow_set_input_track_config, "shadow_set_input_track_config", 7));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_input_led_mode", JS_NewCFunction(ctx, js_shadow_get_input_led_mode, "shadow_get_input_led_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_input_led_mode", JS_NewCFunction(ctx, js_shadow_set_input_led_mode, "shadow_set_input_led_mode", 2));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_open_tool_cmd",

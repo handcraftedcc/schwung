@@ -53,7 +53,7 @@
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
 #define SHADOW_SET_SCALE_LEN 32
 #define SHADOW_SET_LAYOUT_LEN 32
-#define CONTROL_BUFFER_SIZE 144  /* Includes input-mode config and set musical context. */
+#define CONTROL_BUFFER_SIZE 8192  /* Includes input-mode config, params, and set musical context. */
 #define SHADOW_UI_BUFFER_SIZE     512
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
@@ -78,6 +78,10 @@
 #define SHADOW_PARAM_KEY_LEN 64
 #define SHADOW_PARAM_VALUE_LEN 65536  /* 64KB for large ui_hierarchy and state */
 #define SHADOW_SCREENREADER_TEXT_LEN 8192  /* Max text length for screen reader messages */
+#define SHADOW_INPUT_MODULE_ID_LEN 64
+#define SHADOW_INPUT_PARAM_COUNT 16
+#define SHADOW_INPUT_PARAM_KEY_LEN 32
+#define SHADOW_INPUT_PARAM_VALUE_LEN 64
 
 /* ============================================================================
  * UI Flags (set in shadow_control_t.ui_flags)
@@ -164,6 +168,17 @@ typedef struct shadow_control_t {
     volatile uint8_t input_active_track; /* Currently selected input-mode track (0-3) */
     volatile uint8_t input_track_modes[SHADOW_UI_SLOTS]; /* schwung_input_mode_t per track */
     volatile uint8_t input_led_modes[SHADOW_UI_SLOTS];   /* schwung_input_led_mode_t per track */
+    volatile char input_track_module_ids[SHADOW_UI_SLOTS][SHADOW_INPUT_MODULE_ID_LEN];
+    volatile uint8_t input_track_param_counts[SHADOW_UI_SLOTS];
+    volatile char input_track_param_keys[SHADOW_UI_SLOTS][SHADOW_INPUT_PARAM_COUNT][SHADOW_INPUT_PARAM_KEY_LEN];
+    volatile char input_track_param_values[SHADOW_UI_SLOTS][SHADOW_INPUT_PARAM_COUNT][SHADOW_INPUT_PARAM_VALUE_LEN];
+    volatile uint8_t input_track_roots[SHADOW_UI_SLOTS]; /* 0-11 */
+    volatile uint8_t input_track_scales[SHADOW_UI_SLOTS]; /* schwung_input_scale_t per track */
+    volatile int8_t input_track_octaves[SHADOW_UI_SLOTS]; /* melodic octave offset */
+    volatile int8_t input_track_root_octaves[SHADOW_UI_SLOTS]; /* drum root octave offset */
+    volatile uint8_t input_track_index_2[SHADOW_UI_SLOTS]; /* chord second note scale index */
+    volatile uint8_t input_track_index_3[SHADOW_UI_SLOTS]; /* chord third note scale index */
+    volatile uint8_t input_track_colors[SHADOW_UI_SLOTS]; /* track color cache for future input LEDs */
     volatile uint8_t set_musical_context_valid; /* 1 when root/scale/layout were read from current set */
     volatile uint8_t set_root_note;             /* 0-11, 255 when unknown */
     volatile char set_scale[SHADOW_SET_SCALE_LEN];
@@ -382,7 +397,7 @@ typedef struct shadow_overlay_state_t {
 } shadow_overlay_state_t;
 
 /* Compile-time size checks */
-typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];
+typedef char shadow_control_size_check[(sizeof(shadow_control_t) <= CONTROL_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_ui_state_size_check[(sizeof(shadow_ui_state_t) <= SHADOW_UI_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_param_size_check[(sizeof(shadow_param_t) <= SHADOW_PARAM_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_screenreader_size_check[(sizeof(shadow_screenreader_t) <= SHADOW_SCREENREADER_BUFFER_SIZE) ? 1 : -1];

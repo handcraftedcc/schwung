@@ -1,0 +1,48 @@
+{
+  "id": "chromatic",
+  "name": "Chromatic",
+  "version": "0.1.0",
+  "api_version": 1,
+  "component_type": "input_mode",
+  "dsp": "dsp.so",
+  "description": "Maps the 32 playable pads chromatically from a configurable root and octave.",
+  "author": "Schwung",
+  "capabilities": {
+    "input_mode": true,
+    "pad_led_modes": ["pass_through"]
+  },
+  "input_mode": {
+    "engine": "native_dsp",
+    "mode": "true_chromatic_poc"
+  },
+  "chain_params": [
+    {
+      "key": "root",
+      "name": "Root",
+      "label": "Root",
+      "type": "enum",
+      "options": ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"],
+      "values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+      "default": 0
+    },
+    {
+      "key": "scale",
+      "name": "Scale",
+      "label": "Scale",
+      "type": "enum",
+      "options": ["Major", "Minor", "Chromatic"],
+      "values": ["major", "minor", "chromatic"],
+      "default": "major"
+    },
+    {
+      "key": "octave",
+      "name": "Octave",
+      "label": "Octave",
+      "type": "int",
+      "min": -3,
+      "max": 3,
+      "step": 1,
+      "default": 0
+    }
+  ]
+}

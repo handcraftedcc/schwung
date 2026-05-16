@@ -2,14 +2,14 @@
 
 Input Modes let Schwung change how Move's physical pads feed the selected track before Move's firmware receives the event.
 
-The first implementation is intentionally small and safe. It ships one core input module named **Test** with a `Layout` enum:
+The first implementation is intentionally small and safe. It ships three core input modules plus the built-in Native option:
 
-- **None/Native**: Move receives pad notes normally.
-- **32 Drum Pads**: the 32 pads are remapped to consecutive drum notes from MIDI note 36 to 67.
-- **Chromatic**: the 32 pads are remapped to a chromatic range from MIDI note 48 to 79, then injected back into Move as external cable-2 MIDI on the selected track's channel. The original pad note is blocked so Move only hears the remapped note.
-- **Chords**: each pad emits a three-note diatonic triad. This layout exists to validate multi-note output and stuck-note prevention.
+- **Native**: Move receives pad notes normally.
+- **32 Drum Pads**: the 32 pads are remapped to consecutive drum notes from MIDI note 36 upward. The `root_octave` parameter offsets that base in octaves.
+- **Chromatic**: the 32 pads are remapped to a chromatic range from a configurable `root` and `octave`, then injected back into Move as external cable-2 MIDI on the selected track's channel. The original pad note is blocked so Move only hears the remapped note.
+- **Chords**: each pad emits a three-note scale chord. The `root`, `scale`, `index_2`, and `index_3` parameters define the chord tones; defaults are root, third, and fifth.
 
-LED behavior is still native in this first pass. The shared state includes a per-track LED mode field so LED-driving modules can be added later without changing the persistence format.
+LED behavior is still native in this pass. The shared state includes per-track LED mode and track color cache fields so LED-driving modules can be added later without changing the persistence format.
 
 The shim only applies input overrides when Move's pad LED grid looks like a playable Note layout. It watches Move's own pad LED MIDI, ignores pads that are currently held, and classifies the grid only after native navigation gestures that repaint the pads: track buttons, Menu, and Shift + Step 1. Normal pad playing does not continuously reclassify the grid.
 
@@ -33,10 +33,13 @@ In the menu:
 - If the track is Native, the menu opens to the input module selector.
 - Selecting a module opens that module's detail page.
 - Every input module detail page includes a **Swap Module** row that returns to the selector.
-- The Test module exposes its `Layout` enum from `module.json`.
+- Module detail pages are generated from the module's `chain_params` in `module.json`.
+- Click a parameter to enter edit mode, use the jog wheel or a hardware knob to adjust it, then click again to confirm. This matches the normal Shadow UI parameter workflow.
 - Press Back to return to the Slots menu.
 
 Step 9 lights while Shift and Volume Touch are held, matching the existing Step 2 and Step 13 shortcut hints.
+
+When a non-Native melodic layout is active, the native - and + buttons are intercepted and sent to the active input module's button handler. The bundled melodic modules map those actions to their `octave` parameter and return the updated parameter value through the input module API. Held notes are released before the octave changes to avoid stuck notes. Drum layouts keep those buttons native for now because their exposed control is `root_octave`.
 
 ## Persistence
 
@@ -67,9 +70,11 @@ The file is human-readable JSON:
         "led_mode": "pass_through"
       },
       "2": {
-        "module": "test",
+        "module": "chromatic",
         "params": {
-          "layout": "true_chromatic_poc"
+          "root": 0,
+          "scale": "major",
+          "octave": 0
         },
         "mode": "true_chromatic_poc",
         "led_mode": "pass_through"
@@ -88,31 +93,34 @@ Input modes are discovered from installed modules with:
 ```json
 {
   "component_type": "input_mode",
+  "dsp": "dsp.so",
   "input_mode": {
-    "engine": "host_static",
+    "engine": "native_dsp",
     "mode": "true_chromatic_poc"
   }
 }
 ```
 
-The current built-in test module is host-backed and lives at:
+The built-in input modules live under:
 
 ```text
-src/modules/input_modes/test/module.json
+src/modules/input_modes/
 ```
 
-Its `chain_params` entry defines the `Layout` enum used by the Shadow UI. The real-time mapping currently lives in `src/host/input_mode.c`. A later API can replace the host-backed static mapping with loadable input-mode processors while keeping the same menu and persistence shape.
+Their `chain_params` entries define the UI used by the Shadow UI. Their real-time mapping lives in each module's bundled `dsp.so`, loaded from `/data/UserData/schwung/modules/input_modes/<module-id>/dsp.so`.
 
-For simple host-backed modules that do not expose a `Layout` enum, set `input_mode.mode` to one of the supported host layout values:
+For native input modules, set `dsp` to the shared object filename and use `input_mode.engine: "native_dsp"`. The shared object must export `schwung_input_module_init_v1()` from `src/host/input_mode_api_v1.h`. The API receives raw MIDI/button packets and returns replacement MIDI packets, optional light packets, and optional parameter updates.
+
+For compatibility with earlier state files, `input_mode.mode` can still be one of the supported layout values:
 
 - `native`
 - `drum32`
 - `true_chromatic_poc`
 - `chord_pads`
 
-If a module has a `layout`, `mode`, `host_mode`, or `input_mode` parameter, that saved parameter value takes priority over `input_mode.mode`. This lets the Test module switch layouts from one detail page while letting one-layout modules activate their MIDI transform as soon as they are selected.
+If a module has a `layout`, `mode`, `host_mode`, or `input_mode` parameter, that saved parameter value takes priority over `input_mode.mode`. This preserves compatibility with early test-state files while one-layout modules activate their MIDI transform as soon as they are selected.
 
-For compatibility with simple module ids, `true-chromatic`, `32-drum-pads`, `drum-pads`, and `chord-pads` are accepted aliases for the same host-backed layouts.
+For compatibility with simple module ids, `true-chromatic`, `32-drum-pads`, `drum-pads`, and `chord-pads` are accepted aliases for the same built-in layouts.
 
 The current set's musical context is also mirrored into shared memory for future input modules:
 
@@ -124,7 +132,7 @@ Shadow UI modules can read it with `shadow_get_set_musical_context()`. The value
 
 ## Developer Notes
 
-The host-side core lives in `src/host/input_mode.c` and is deliberately independent of the shim. Unit tests cover the pad mapping, pass-through behavior, and panic notes emitted when switching a track back to Native while notes are held.
+The host-side core lives in `src/host/input_mode.c` and is deliberately independent of the shim. It loads input module DSP files, forwards module params, tracks held pads for safe note-offs, and carries a separate light-packet list for modules that want to repaint pads later. Unit tests compile the bundled input modules as shared objects and cover module loading, pad mapping, pass-through behavior, and panic notes emitted when switching a track back to Native while notes are held.
 
 The shim owns the real-time wiring:
 

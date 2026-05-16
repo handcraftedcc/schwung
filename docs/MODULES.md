@@ -124,11 +124,19 @@ The Shadow UI treats input modes like the other module-backed chain slots:
 - Module detail pages are generated from `chain_params` metadata in `module.json`.
 - Every input module detail page gets an automatic **Swap Module** row that returns to the selector.
 
-The current core test module is `src/modules/input_modes/test/module.json`. It exposes a `Layout` enum with **None/Native**, **32 Drum Pads**, **Chromatic**, and **Chords**. The real-time mapping is host-backed for now; `module.json` owns the menu shape and saved parameter values.
+The current core input modules live under `src/modules/input_modes/`:
 
-Single-layout host-backed input modules can declare their MIDI behavior with `input_mode.mode` in `module.json`. Editable parameters named `layout`, `mode`, `host_mode`, or `input_mode` take priority over that module default.
+- `drum32` exposes `root_octave`.
+- `chromatic` exposes `root`, `scale`, and `octave`.
+- `chord-pads` exposes `root`, `scale`, `octave`, `index_2`, and `index_3`.
+
+The real-time mapping lives in each module's bundled native DSP file. `module.json` owns the menu shape and saved parameter values.
+
+Native input modules declare `"dsp": "dsp.so"` and `input_mode.engine: "native_dsp"` in `module.json`. The shared object exports `schwung_input_module_init_v1()` from `src/host/input_mode_api_v1.h`.
 
 Input modules that need the current set key/scale can use `shadow_get_set_musical_context()` from the Shadow UI runtime. It returns the active set's `rootNote`, `scale`, and `melodicLayout` when those fields were read from `Song.abl`.
+
+Input modules receive their resolved `chain_params` through the input module API. Module detail pages use the same edit flow as other Shadow UI parameter pages: click to enter edit mode, jog/knob to adjust, click to confirm. Non-Native melodic layouts can intercept the native - and + buttons and return parameter updates, such as changing an `octave` parameter.
 
 At runtime, pad remapping is enabled by a shim-side classifier that watches Move's pad LED grid after native navigation gestures repaint it. Playable note/chromatic/drum LED layouts allow input modules to rewrite pads; track, set, and unknown LED layouts pass pads through.
 

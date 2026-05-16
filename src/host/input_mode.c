@@ -1,5 +1,7 @@
 #include "input_mode.h"
 
+#include <dlfcn.h>
+#include <stdio.h>
 #include <string.h>
 
 static int valid_track(int track) {
@@ -15,11 +17,134 @@ static uint8_t track_channel(int track) {
     return (uint8_t)(track & 0x0F);
 }
 
+static int clamp_int(int value, int min_value, int max_value) {
+    if (value < min_value) return min_value;
+    if (value > max_value) return max_value;
+    return value;
+}
+
 static int valid_mode(schwung_input_mode_t mode) {
     return mode == SCHWUNG_INPUT_MODE_NATIVE ||
            mode == SCHWUNG_INPUT_MODE_TRUE_CHROMATIC_POC ||
            mode == SCHWUNG_INPUT_MODE_DRUM32 ||
            mode == SCHWUNG_INPUT_MODE_CHORD_PADS;
+}
+
+schwung_input_mode_config_t schwung_input_mode_default_config(void) {
+    schwung_input_mode_config_t config;
+    memset(&config, 0, sizeof(config));
+    config.scale = SCHWUNG_INPUT_SCALE_MAJOR;
+    config.index_2 = 2;
+    config.index_3 = 4;
+    return config;
+}
+
+static void normalize_config(schwung_input_mode_config_t *config) {
+    if (!config) return;
+    config->root = (uint8_t)(config->root % 12);
+    config->octave = (int8_t)clamp_int(config->octave, -5, 5);
+    config->root_octave = (int8_t)clamp_int(config->root_octave, -5, 5);
+    if (config->scale > SCHWUNG_INPUT_SCALE_CHROMATIC) {
+        config->scale = SCHWUNG_INPUT_SCALE_MAJOR;
+    }
+    config->index_2 = (uint8_t)clamp_int(config->index_2, 0, 15);
+    config->index_3 = (uint8_t)clamp_int(config->index_3, 0, 15);
+}
+
+static void unload_track_module(schwung_input_mode_track_config_t *track) {
+    if (!track) return;
+    if (track->module.api && track->module.api->destroy && track->module.instance) {
+        track->module.api->destroy(track->module.instance);
+    }
+    if (track->module.handle) {
+        dlclose(track->module.handle);
+    }
+    memset(&track->module, 0, sizeof(track->module));
+}
+
+static int module_id_safe(const char *module_id) {
+    if (!module_id || !module_id[0]) return 0;
+    for (const char *p = module_id; *p; p++) {
+        if ((*p >= 'a' && *p <= 'z') ||
+            (*p >= '0' && *p <= '9') ||
+            *p == '-' || *p == '_') {
+            continue;
+        }
+        return 0;
+    }
+    return 1;
+}
+
+static void apply_config_to_module(schwung_input_mode_track_config_t *track);
+
+static int load_track_module(schwung_input_mode_state_t *state, int track, const char *module_id) {
+    if (!state || !valid_track(track) || !module_id_safe(module_id)) return 0;
+    schwung_input_mode_track_config_t *track_config = &state->tracks[track];
+    if (strcmp(track_config->module.module_id, module_id) == 0 && track_config->module.api) {
+        return 1;
+    }
+
+    unload_track_module(track_config);
+
+    char module_dir[SCHWUNG_INPUT_MODE_MODULE_ROOT_LEN];
+    char dsp_path[SCHWUNG_INPUT_MODE_MODULE_ROOT_LEN + SCHWUNG_INPUT_MODE_MODULE_ID_LEN + 16];
+    snprintf(module_dir, sizeof(module_dir), "%s/%s", state->modules_root, module_id);
+    snprintf(dsp_path, sizeof(dsp_path), "%s/dsp.so", module_dir);
+
+    void *handle = dlopen(dsp_path, RTLD_NOW | RTLD_LOCAL);
+    if (!handle) return 0;
+
+    schwung_input_module_init_v1_fn init_fn =
+        (schwung_input_module_init_v1_fn)dlsym(handle, "schwung_input_module_init_v1");
+    if (!init_fn) {
+        dlclose(handle);
+        return 0;
+    }
+
+    schwung_input_module_api_v1_t *api = init_fn();
+    if (!api || api->api_version != SCHWUNG_INPUT_MODULE_API_VERSION || !api->process_midi) {
+        dlclose(handle);
+        return 0;
+    }
+
+    track_config->module.handle = handle;
+    track_config->module.api = api;
+    track_config->module.instance = api->create ? api->create(module_dir) : NULL;
+    snprintf(track_config->module.module_id, sizeof(track_config->module.module_id), "%s", module_id);
+    snprintf(track_config->module.module_dir, sizeof(track_config->module.module_dir), "%s", module_dir);
+    apply_config_to_module(track_config);
+    return 1;
+}
+
+static int result_note_count(const schwung_input_mode_result_t *result, uint8_t *notes, int max_notes) {
+    if (!result || !notes || max_notes <= 0) return 0;
+    int count = 0;
+    for (int i = 0; i < result->count && count < max_notes; i++) {
+        const uint8_t *pkt = result->packets[i];
+        if ((pkt[1] & 0xF0) == 0x90 && pkt[3] > 0) {
+            notes[count++] = pkt[2];
+        }
+    }
+    return count;
+}
+
+static void module_set_int_param(schwung_input_mode_track_config_t *track,
+                                 const char *key,
+                                 int value) {
+    if (!track || !track->module.api || !track->module.api->set_param) return;
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%d", value);
+    track->module.api->set_param(track->module.instance, key, buf);
+}
+
+static void apply_config_to_module(schwung_input_mode_track_config_t *track) {
+    if (!track || !track->module.api || !track->module.api->set_param) return;
+    module_set_int_param(track, "root", track->config.root);
+    module_set_int_param(track, "scale", track->config.scale);
+    module_set_int_param(track, "octave", track->config.octave);
+    module_set_int_param(track, "root_octave", track->config.root_octave);
+    module_set_int_param(track, "index_2", track->config.index_2);
+    module_set_int_param(track, "index_3", track->config.index_3);
 }
 
 static int color_value_at(const int *pad_colors, int idx) {
@@ -153,38 +278,6 @@ schwung_input_view_class_t schwung_input_mode_classify_led_grid(const int pad_co
         : SCHWUNG_INPUT_VIEW_NON_PLAY;
 }
 
-static int build_notes_for_pad(schwung_input_mode_t mode,
-                               int pidx,
-                               uint8_t *notes,
-                               int max_notes) {
-    if (!notes || max_notes <= 0 || pidx < 0 || pidx >= SCHWUNG_INPUT_MODE_PADS) return 0;
-
-    if (mode == SCHWUNG_INPUT_MODE_TRUE_CHROMATIC_POC) {
-        notes[0] = (uint8_t)(48 + pidx);
-        return 1;
-    }
-
-    if (mode == SCHWUNG_INPUT_MODE_DRUM32) {
-        notes[0] = (uint8_t)(36 + pidx);
-        return 1;
-    }
-
-    if (mode == SCHWUNG_INPUT_MODE_CHORD_PADS && max_notes >= 3) {
-        static const uint8_t roots[7] = {60, 62, 64, 65, 67, 69, 71};
-        static const uint8_t thirds[7] = {4, 3, 3, 4, 4, 3, 3};
-        static const uint8_t fifths[7] = {7, 7, 7, 7, 7, 7, 6};
-        int degree = pidx % 7;
-        int octave = pidx / 7;
-        uint8_t root = (uint8_t)(roots[degree] + octave * 12);
-        notes[0] = root;
-        notes[1] = (uint8_t)(root + thirds[degree]);
-        notes[2] = (uint8_t)(root + fifths[degree]);
-        return 3;
-    }
-
-    return 0;
-}
-
 static int append_packet(schwung_input_mode_result_t *result,
                          uint8_t cin,
                          uint8_t status,
@@ -198,14 +291,6 @@ static int append_packet(schwung_input_mode_result_t *result,
     pkt[2] = data1;
     pkt[3] = data2;
     return 1;
-}
-
-static int append_note_on(schwung_input_mode_result_t *result,
-                          uint8_t channel,
-                          uint8_t note,
-                          uint8_t velocity) {
-    return append_packet(result, (uint8_t)((2 << 4) | 0x09),
-                         (uint8_t)(0x90 | (channel & 0x0F)), note, velocity);
 }
 
 static int append_note_off(schwung_input_mode_result_t *result,
@@ -223,10 +308,19 @@ void schwung_input_mode_result_clear(schwung_input_mode_result_t *result) {
 void schwung_input_mode_init(schwung_input_mode_state_t *state) {
     if (!state) return;
     memset(state, 0, sizeof(*state));
+    snprintf(state->modules_root, sizeof(state->modules_root), "%s",
+             "/data/UserData/schwung/modules/input_modes");
     for (int i = 0; i < SCHWUNG_INPUT_MODE_TRACKS; i++) {
         state->tracks[i].mode = SCHWUNG_INPUT_MODE_NATIVE;
         state->tracks[i].led_mode = SCHWUNG_INPUT_LED_PASS_THROUGH;
+        state->tracks[i].config = schwung_input_mode_default_config();
     }
+}
+
+void schwung_input_mode_set_modules_root(schwung_input_mode_state_t *state,
+                                         const char *modules_root) {
+    if (!state || !modules_root || !modules_root[0]) return;
+    snprintf(state->modules_root, sizeof(state->modules_root), "%s", modules_root);
 }
 
 int schwung_input_mode_panic_track(schwung_input_mode_state_t *state,
@@ -266,6 +360,125 @@ int schwung_input_mode_set_track_mode(schwung_input_mode_state_t *state,
     return emitted;
 }
 
+int schwung_input_mode_set_track_module(schwung_input_mode_state_t *state,
+                                        int track,
+                                        const char *module_id,
+                                        schwung_input_mode_result_t *result) {
+    if (result) schwung_input_mode_result_clear(result);
+    if (!state || !valid_track(track)) return 0;
+    if (!module_id || strcmp(module_id, "native") == 0 || !module_id[0]) {
+        int emitted = schwung_input_mode_panic_track(state, track, result);
+        unload_track_module(&state->tracks[track]);
+        memset(state->tracks[track].param_keys, 0, sizeof(state->tracks[track].param_keys));
+        memset(state->tracks[track].param_values, 0, sizeof(state->tracks[track].param_values));
+        return emitted;
+    }
+    int emitted = 0;
+    if (strcmp(state->tracks[track].module.module_id, module_id) != 0) {
+        emitted = schwung_input_mode_panic_track(state, track, result);
+        memset(state->tracks[track].param_keys, 0, sizeof(state->tracks[track].param_keys));
+        memset(state->tracks[track].param_values, 0, sizeof(state->tracks[track].param_values));
+    }
+    load_track_module(state, track, module_id);
+    return emitted;
+}
+
+int schwung_input_mode_set_track_param(schwung_input_mode_state_t *state,
+                                       int track,
+                                       const char *key,
+                                       const char *value,
+                                       schwung_input_mode_result_t *result) {
+    if (result) schwung_input_mode_result_clear(result);
+    if (!state || !valid_track(track) || !key || !value) return 0;
+    schwung_input_mode_track_config_t *track_config = &state->tracks[track];
+    if (!track_config->module.api || !track_config->module.api->set_param) return 0;
+
+    int slot = -1;
+    for (int i = 0; i < SCHWUNG_INPUT_MODE_PARAM_COUNT; i++) {
+        if (track_config->param_keys[i][0] == '\0' && slot < 0) slot = i;
+        if (strncmp(track_config->param_keys[i], key, SCHWUNG_INPUT_MODE_PARAM_KEY_LEN) == 0) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) return 0;
+    if (strncmp(track_config->param_values[slot], value, SCHWUNG_INPUT_MODE_PARAM_VALUE_LEN) == 0 &&
+        strncmp(track_config->param_keys[slot], key, SCHWUNG_INPUT_MODE_PARAM_KEY_LEN) == 0) {
+        return 0;
+    }
+
+    int emitted = schwung_input_mode_panic_track(state, track, result);
+    snprintf(track_config->param_keys[slot], sizeof(track_config->param_keys[slot]), "%s", key);
+    snprintf(track_config->param_values[slot], sizeof(track_config->param_values[slot]), "%s", value);
+    track_config->module.api->set_param(track_config->module.instance, key, value);
+    return emitted;
+}
+
+int schwung_input_mode_set_track_config(schwung_input_mode_state_t *state,
+                                        int track,
+                                        const schwung_input_mode_config_t *config,
+                                        schwung_input_mode_result_t *result) {
+    if (result) schwung_input_mode_result_clear(result);
+    if (!state || !valid_track(track) || !config) return 0;
+
+    schwung_input_mode_config_t next = *config;
+    normalize_config(&next);
+    int emitted = 0;
+    if (memcmp(&state->tracks[track].config, &next, sizeof(next)) != 0) {
+        emitted = schwung_input_mode_panic_track(state, track, result);
+    }
+    state->tracks[track].config = next;
+    apply_config_to_module(&state->tracks[track]);
+    return emitted;
+}
+
+int schwung_input_mode_handle_button(schwung_input_mode_state_t *state,
+                                     int active_track,
+                                     uint8_t cin,
+                                     uint8_t status,
+                                     uint8_t data1,
+                                     uint8_t data2,
+                                     schwung_input_mode_result_t *result) {
+    if (result) schwung_input_mode_result_clear(result);
+    if (!state || !valid_track(active_track)) return 0;
+    schwung_input_mode_track_config_t *track = &state->tracks[active_track];
+    if (track->mode == SCHWUNG_INPUT_MODE_NATIVE || !track->module.api) return 0;
+    if (cin != 0x0B || (status & 0xF0) != 0xB0) return 0;
+    if (!track->module.api->process_button) return 0;
+
+    schwung_input_module_event_t event = {
+        .active_track = active_track,
+        .channel = track_channel(active_track),
+        .cin = cin,
+        .status = status,
+        .data1 = data1,
+        .data2 = data2
+    };
+    schwung_input_mode_result_t module_result;
+    schwung_input_mode_result_clear(&module_result);
+    if (!track->module.api->process_button(track->module.instance, &event, NULL, &module_result)) {
+        return 0;
+    }
+    schwung_input_mode_panic_track(state, active_track, result);
+    for (int i = 0; i < module_result.count && result && result->count < SCHWUNG_INPUT_MODE_MAX_PACKET_OUT; i++) {
+        memcpy(result->packets[result->count++], module_result.packets[i], 4);
+    }
+    for (int i = 0; i < module_result.light_count && result && result->light_count < SCHWUNG_INPUT_MODE_MAX_PACKET_OUT; i++) {
+        memcpy(result->light_packets[result->light_count++], module_result.light_packets[i], 4);
+    }
+    for (int i = 0; i < module_result.param_update_count &&
+                    result &&
+                    result->param_update_count < SCHWUNG_INPUT_MODULE_MAX_PARAM_UPDATES; i++) {
+        result->param_updates[result->param_update_count++] = module_result.param_updates[i];
+        schwung_input_mode_set_track_param(state,
+                                           active_track,
+                                           module_result.param_updates[i].key,
+                                           module_result.param_updates[i].value,
+                                           NULL);
+    }
+    return 1;
+}
+
 int schwung_input_mode_handle_midi(schwung_input_mode_state_t *state,
                                    int active_track,
                                    uint8_t cin,
@@ -276,6 +489,7 @@ int schwung_input_mode_handle_midi(schwung_input_mode_state_t *state,
     if (result) schwung_input_mode_result_clear(result);
     if (!state || !valid_track(active_track)) return 0;
     if (state->tracks[active_track].mode == SCHWUNG_INPUT_MODE_NATIVE) return 0;
+    if (!state->tracks[active_track].module.api) return 0;
 
     uint8_t type = status & 0xF0;
     int pidx = pad_index(data1);
@@ -296,16 +510,21 @@ int schwung_input_mode_handle_midi(schwung_input_mode_state_t *state,
             memset(held, 0, sizeof(*held));
         }
 
-        uint8_t mapped_notes[8] = {0};
-        int note_count = build_notes_for_pad(state->tracks[active_track].mode,
-                                             pidx,
-                                             mapped_notes,
-                                             (int)sizeof(mapped_notes));
-        if (note_count <= 0) return 0;
+        schwung_input_module_event_t event = {
+            .active_track = active_track,
+            .channel = channel,
+            .cin = cin,
+            .status = status,
+            .data1 = data1,
+            .data2 = data2
+        };
+        int handled = state->tracks[active_track].module.api->process_midi(
+            state->tracks[active_track].module.instance, &event, NULL, result);
+        if (!handled) return 0;
 
-        for (int i = 0; i < note_count; i++) {
-            append_note_on(result, channel, mapped_notes[i], data2);
-        }
+        uint8_t mapped_notes[8] = {0};
+        int note_count = result_note_count(result, mapped_notes, (int)sizeof(mapped_notes));
+        if (note_count <= 0) return 0;
         held->active = 1;
         held->count = (uint8_t)note_count;
         memcpy(held->notes, mapped_notes, (size_t)note_count);
